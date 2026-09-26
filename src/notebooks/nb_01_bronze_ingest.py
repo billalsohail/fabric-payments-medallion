@@ -35,14 +35,13 @@
 # %%
 from __future__ import annotations
 
-import json
 import logging
 import time
 
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 
-from src.lib import run_log, watermark
+from src.lib import config, run_log, watermark
 from src.runtime import params
 from src.runtime.context import (
     Layer,
@@ -85,31 +84,9 @@ BRONZE_PREFIX = "br_"
 # a week without anyone noticing.
 
 # %%
-def load_config(entity: str) -> dict:
-    if not entity:
-        raise ValueError("parameter `entity` is required")
-    rows = (
-        read_table(Layer.META, "meta_source_config")
-        .filter(F.col("entity") == entity)
-        .collect()
-    )
-    if not rows:
-        available = [
-            r["entity"]
-            for r in read_table(Layer.META, "meta_source_config").select("entity").collect()
-        ]
-        raise ValueError(
-            f"no meta_source_config row for entity {entity!r}. Configured: {sorted(available)}. "
-            "Run nb_99_seed_metadata to seed the control plane."
-        )
-    cfg = rows[0].asDict()
-    # Both of these are stored as strings rather than as a map and an array, for the same reason:
-    # Data Factory's Lookup activity yields pipeline expressions that are strings, so a config
-    # schema using Spark complex types would be unreadable by the orchestrator meant to drive it.
-    # Parsed at the point of use — here.
-    cfg["read_options"] = json.loads(cfg["read_options"]) if cfg["read_options"] else {}
-    cfg["merge_keys"] = [k.strip() for k in (cfg["merge_keys"] or "").split(",") if k.strip()]
-    return cfg
+# Re-exported rather than defined here: silver reads the same config table, and on Fabric a
+# notebook cannot import another notebook — only `%run` it. See src/lib/config.py.
+load_config = config.load_source_config
 
 
 # %% [markdown]
@@ -286,11 +263,7 @@ def write_bronze(df: DataFrame, cfg: dict, batch_id: str) -> int:
 def ingest(entity: str, until_date: str = "", batch_id: str = "", run_id: str = "",
            force_reload: bool = False) -> dict:
     cfg = load_config(entity)
-    if not cfg["enabled"]:
-        raise ValueError(
-            f"{entity} is disabled in meta_source_config. Enable it there rather than bypassing "
-            "config — a feed loaded despite its config row is a feed nobody can reason about."
-        )
+    config.require_enabled(cfg)
 
     run_id = run_id or f"local-{int(time.time())}"
     partitions, wm = select_window(cfg, until_date, force_reload)
