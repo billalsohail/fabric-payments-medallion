@@ -83,7 +83,25 @@ Emits only changed rows per day, with an operation flag. This is the SCD2 driver
 | `_op` | string(1) | no | `I` \| `U` \| `D`. `D` closes the SCD2 row, never hard-deletes |
 | `_change_ts` | timestamp | no | Watermark + dedupe ordering column |
 
-## `customers` — CSV, daily full snapshot
+**Two things the contract deliberately does not promise about this feed.**
+
+`status` is an attribute, not a state machine. The generator produces `CLOSED → ACTIVE` transitions
+(106 of them at `tiny`), because nothing here models account lifecycle as a set of legal edges. Real
+CDC feeds do produce reopenings, and a dimension is the wrong place to reject one: silver's job is to
+record what the source said, not to decide the source was wrong. If the business rule existed, it
+would be a DQ rule with `warn` severity and a row in `meta_dq_results` — not a silent drop. Note that
+`closed_date` **is** contracted against `status` (non-null iff `CLOSED`), and that holds in both
+directions with zero violations; the pair is consistent, the sequence is not constrained.
+
+Two changes for the same `account_id` can carry the **same `_change_ts`** (71 rows at `tiny`) — a
+source applying two updates inside the same minute, which is ordinary for a batch extract. A
+half-open interval chain cannot represent two states at one instant without a zero-width version, and
+a zero-width version is unreachable by any point-in-time join, so `src/lib/scd2.py` collapses them
+deterministically (highest hash wins) rather than emitting a row no query can ever return. The
+consequence is stated plainly in `tests/test_scd2.py`: the dimension preserves every *observable*
+state, which is fewer than every state in the feed.
+
+## `customers` — CSV, monthly full snapshot
 
 Contains PII. Masking is applied in the **gold** layer (`05_security.sql`), not silver: silver keeps
 the unmasked value so that reprocessing is possible, and access is controlled at the serving layer.
@@ -100,7 +118,7 @@ the unmasked value so that reprocessing is possible, and access is controlled at
 | `marketing_opt_in` | boolean | no | |
 | `_snapshot_date` | date | no | Snapshot identity; dedupe ordering column |
 
-## `merchants` — Parquet, daily full snapshot
+## `merchants` — Parquet, monthly full snapshot
 
 Parquet deliberately: proves the bronze notebook is format-agnostic via config, not code branches.
 
@@ -146,7 +164,13 @@ Raised 0–90 days after the transaction. This is the feed that makes a naive
 
 **Injected gaps:** a handful of dates have no rates. GBP-normalised volume must therefore
 forward-fill from the last known rate and flag it, not silently drop the transaction. The
-`freshness` DQ rule catches the gap; the gold load applies the fill.
+`continuity` DQ rule catches the gap and the gold load applies the fill.
+
+`continuity` rather than `freshness`, and the distinction matters: `freshness` asks whether the
+newest rate has fallen behind, which catches a feed that *stopped*. These gaps are interior — the
+feed kept producing and simply skipped days. Both rules are configured on this feed because they
+detect different outages, and both are batch-level: the defect is a row that does not exist, and a
+missing row cannot be quarantined.
 
 ## `card_products` — CSV, static
 
@@ -178,7 +202,7 @@ Rates, not absolute counts: the same figure has to hold at `tiny` and at `demo`,
 | Negative `amount_minor` | 0.02% | `range` rule → quarantine | `test_dq_gate` |
 | Invalid `currency_code` | 0.015% | `enum_domain` rule → quarantine | `test_dq_gate` |
 | `decline_reason_code` inconsistent with `status` | 0.05% | Cross-field rule (both directions) | `test_dq_gate` |
-| FX rate date gaps | 5 dates, evenly spread | `freshness` rule + forward-fill | `test_fx_gap_fill` |
+| FX rate date gaps | 5 dates, evenly spread | `continuity` rule (batch-level) + forward-fill | `test_fx_gap_fill` |
 | Disputes 0–90 days late | all disputes | Rolling-window reprocessing | `test_late_arriving` |
 | `accounts` CDC `U`/`D` operations | 0–5 changes/account; 2% of changes are `D` | SCD2 close-out, incl. logical delete | `test_scd2_invariants` |
 | `wallet_type` appears at month 10 | one-off | Schema evolution in bronze | `test_schema_evolution` |

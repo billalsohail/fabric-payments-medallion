@@ -206,8 +206,9 @@ SOURCE_CONFIG_SCHEMA = StructType([
 # %% [markdown]
 # ## `meta_dq_rules` — the data-quality contract, as data
 #
-# Seven rule types. Six are declarative; `expression` is the deliberate escape hatch for
-# cross-field invariants, and is used exactly once so it stays an exception rather than a habit.
+# Eight rule types, in two categories that behave differently on purpose.
+#
+# **Row rules** give a verdict per row, so a failing row can be quarantined:
 #
 # | Type | `rule_params` | Meaning |
 # |---|---|---|
@@ -216,8 +217,20 @@ SOURCE_CONFIG_SCHEMA = StructType([
 # | `range` | `min`, `max` | numeric bounds, either side optional |
 # | `enum_domain` | `values` | value is in the allowed set |
 # | `referential` | `ref_layer`, `ref_table`, `ref_column` | value exists in a parent table |
-# | `freshness` | `max_age_days` | the feed's latest data is recent enough |
 # | `expression` | `predicate` | arbitrary SQL that must be **true** for every row |
+#
+# **Batch rules** give one verdict per load and quarantine nothing:
+#
+# | Type | `rule_params` | Meaning |
+# |---|---|---|
+# | `freshness` | `max_age_days` | the newest value has not fallen behind the batch's arrival date |
+# | `continuity` | `max_missing_days` | no day is absent from the span the batch covers |
+#
+# The split is not cosmetic. What a batch rule detects is rows that are **absent** — a feed that
+# stopped producing, a missing rate date — and a row that does not exist cannot be quarantined.
+# Collapsing the two categories is how a completeness check ends up rejecting a perfectly good
+# batch. `expression` is the deliberate escape hatch for cross-field invariants and is used twice,
+# so it stays an exception rather than a habit.
 #
 # **`condition`** restricts a rule to a subset of rows. This is not a convenience: `merchant_id` is
 # legitimately null for ATM withdrawals, so a blanket `not_null` would be wrong and a rule engine
@@ -335,8 +348,17 @@ DQ_RULES = [
     rule("fx_rates", "from_currency", "enum_domain", "warn",
          values=[c for c in ISO_CURRENCIES if c != "GBP"], fail_threshold_pct=1.0),
     rule("fx_rates", "rate_date", "freshness", "warn", max_age_days=3, fail_threshold_pct=None,
-         description="Catches the injected rate gaps. Gold forward-fills and flags the fill "
-                     "rather than dropping the transaction."),
+         description="Detects a feed that has stopped producing: the newest rate_date falling "
+                     "behind the batch's arrival date. Catches a trailing gap, not an interior "
+                     "one — that is what the continuity rule below is for."),
+    rule("fx_rates", "rate_date", "continuity", "warn", max_missing_days=0,
+         fail_threshold_pct=None,
+         description="Catches the injected interior rate gaps: days absent from [min, max]. A "
+                     "batch-level rule by necessity — the defect is a row that does not exist, and "
+                     "a missing row cannot be quarantined. Recorded, not fatal: gold forward-fills "
+                     "from the last known rate and flags the fill rather than dropping the "
+                     "transaction, because a dropped transaction is a worse answer than a stale "
+                     "rate."),
 
     # ---- card_products ---------------------------------------------------------------
     rule("card_products", "card_product_code", "not_null", "error"),
@@ -382,8 +404,15 @@ DQ_RESULTS_SCHEMA = StructType([
     StructField("rows_evaluated", LongType(), False),
     StructField("rows_failed", LongType(), False),
     StructField("failed_pct", StringType(), True),
-    # passed | quarantined | failed_run — the third is what makes a DQ gate visible after the fact.
+    # passed | quarantined | failed_run | batch_warn | not_evaluated. `failed_run` is what makes a
+    # DQ gate visible after the fact; `not_evaluated` is what stops a rule that never ran from
+    # looking like a rule that passed.
     StructField("outcome", StringType(), False),
+    # The measure behind the outcome, in words: "7/50158 row(s) (0.014%)", or for a batch rule
+    # "5 missing day(s) across 120d span [2026-05-24..2026-09-20]". A batch rule's defect is not a
+    # row count, so without this column its finding would be recorded as zeroes and the table would
+    # explain nothing at exactly the moment someone needed it to.
+    StructField("detail", StringType(), True),
     StructField("evaluated_ts", TimestampType(), False),
 ])
 

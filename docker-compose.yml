@@ -1,0 +1,43 @@
+# Local stand-in for the `wh_gold` Fabric Warehouse.
+#
+# This container exists for one reason: to execute the gold-layer T-SQL for real, so that the
+# stored procedures in src/warehouse/procs are demonstrably correct rather than merely reviewed.
+# It is NOT a claim that Fabric Warehouse is SQL Server — it is not. Fabric Warehouse is a
+# distributed MPP engine with a deliberately narrower T-SQL surface, so anything this container
+# happily accepts might still be rejected on Fabric. That gap is what tools/fabric_tsql_lint.py
+# exists to close: the container proves the logic runs, the linter proves it would run *there*.
+#
+# Authentication: a local-only SA password, deliberately in plain sight. There is nothing to protect
+# here and pretending otherwise would add ceremony without security. Worth saying out loud because
+# it does not carry over: a Fabric Warehouse has no SQL login at all — authentication is Entra ID,
+# and the gold connection in `src/runtime/context.py` uses `ActiveDirectoryServicePrincipal` there.
+services:
+  gold:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: fpm-gold
+    # SQL Server ships amd64-only. On Apple Silicon this runs under Rosetta (Docker Desktop →
+    # Settings → General → "Use Rosetta for x86/amd64 emulation"), which is the supported path;
+    # without it Docker falls back to QEMU and SQL Server 2022 will not start.
+    platform: linux/amd64
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "${MSSQL_SA_PASSWORD:-Gold_local_dev_2026!}"
+      MSSQL_PID: Developer
+      # UTC, matching the Spark session and the timestamps in the data contracts. A container in
+      # local time would silently shift settlement dates across the bridge.
+      TZ: UTC
+    ports:
+      - "${MSSQL_PORT:-1433}:1433"
+    volumes:
+      - gold-data:/var/opt/mssql
+    healthcheck:
+      # Uses the path that exists in 2022 images; `sqlcmd` moved out of /opt/mssql-tools/ into
+      # /opt/mssql-tools18/, and 18 requires -C to trust the container's self-signed certificate.
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -Q 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
+volumes:
+  gold-data:

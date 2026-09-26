@@ -28,6 +28,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import time
 from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
@@ -170,6 +171,23 @@ def get_spark():
     # Pinning both to the interpreter that imported us keeps `uv run` and a bare venv equivalent.
     os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
     os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
+
+    # Force the *process* timezone to UTC before the JVM starts, not just the Spark session.
+    #
+    # `spark.sql.session.timeZone=UTC` below governs how Spark parses, stores and renders
+    # timestamps — but a timestamp pulled back into Python by `collect()` is converted through
+    # `java.sql.Timestamp`, which uses the JVM's default timezone. On a machine in Europe/London
+    # that made `df.first()["valid_to"]` read one hour later than the value Spark had stored, while
+    # `date_format(...)` on the same column returned the correct UTC string — so the same timestamp
+    # had two values depending on which side of the boundary you looked at it from. A test comparing
+    # a collected `valid_to` against the source string caught it; a watermark round-tripped through
+    # Python would have shifted a load window by an hour without anything failing.
+    #
+    # The JVM reads `TZ` at startup, so setting it here fixes both sides with one variable, and it
+    # makes a local run behave the same on any developer's machine — and the same as Fabric Spark,
+    # whose driver runs UTC.
+    os.environ["TZ"] = "UTC"
+    time.tzset()
 
     builder = (
         SparkSession.builder.appName("fabric-payments-medallion")
