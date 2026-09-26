@@ -73,6 +73,13 @@ ROW_RULE_TYPES = frozenset(
 )
 BATCH_RULE_TYPES = frozenset({"freshness", "continuity"})
 
+# Rule types that are *derived from code* rather than read from `meta_dq_rules`. Currently one:
+# `castable`, generated from the silver type contract in `src/lib/contracts.py`. They are row rules
+# in every respect that matters here — a row either survives its contracted type or it does not, so
+# it can be quarantined and the `warn`-plus-threshold escalation applies — but they are not
+# configurable, and `load_rules` refuses them so the two mechanisms cannot quietly overlap.
+DERIVED_RULE_TYPES = frozenset({"castable"})
+
 
 class DQFailure(RuntimeError):
     """Raised when a rule of severity ``error`` fires, or a ``warn`` rule breaches its threshold."""
@@ -92,7 +99,7 @@ class Rule:
 
     @property
     def is_row_rule(self) -> bool:
-        return self.rule_type in ROW_RULE_TYPES
+        return self.rule_type in ROW_RULE_TYPES or self.rule_type in DERIVED_RULE_TYPES
 
 
 @dataclass
@@ -202,6 +209,13 @@ def load_rules(rule_set: str) -> list[Rule]:
         )
     out = []
     for r in rows:
+        if r["rule_type"] in DERIVED_RULE_TYPES:
+            raise ValueError(
+                f"rule {r['rule_id']} has rule_type {r['rule_type']!r}, which is derived from code "
+                "rather than configured. Type contracts live in SILVER_TYPES in src/lib/contracts.py "
+                "because changing a column's type is a breaking migration of a table other layers "
+                "read, not a config flip. Delete the row."
+            )
         threshold = r["fail_threshold_pct"]
         out.append(
             Rule(
@@ -511,6 +525,37 @@ def apply(
         log.log(logging.ERROR if r.fails_run else logging.WARNING,
                 "  %s [%s] %s: %s", r.rule.rule_id, r.rule.severity, r.outcome, r.detail)
     return outcome
+
+
+def quarantine(df: DataFrame, entity: str, run_id: str, batch_id: str) -> None:
+    """Send rows to the entity's quarantine table.
+
+    Public because the type-contract gate in `src/lib/contracts.py` has to quarantine rows before
+    `apply` ever runs — a `range` rule on a string that will not cast to a number is a lexical
+    comparison wearing a numeric disguise, so castability is checked first and separately. Rather
+    than let that gate write to the quarantine table itself, it comes through here: *where rejects
+    go, and what shape they take* stays owned by this module, so there is one quarantine convention
+    rather than two that drift.
+
+    ``df`` must already carry ``RULE_IDS_COL`` and ``SEVERITY_COL``.
+    """
+    missing = {RULE_IDS_COL, SEVERITY_COL} - set(df.columns)
+    if missing:
+        raise ValueError(
+            f"quarantined rows must carry {sorted(missing)} — a rejected row without the rule that "
+            "rejected it is unactionable."
+        )
+    _write_quarantine(df, entity, run_id, batch_id)
+
+
+def record(results: list[RuleResult], entity: str, run_id: str, batch_id: str) -> None:
+    """Append rule outcomes to ``meta_dq_results``.
+
+    Public for the same reason as `quarantine`: the type gate's verdicts belong in the same table as
+    every other rule's, so that "show me every rule that fired on this run" is one query and not a
+    union over wherever each gate decided to keep its own log.
+    """
+    _write_results(results, entity, run_id, batch_id)
 
 
 def _write_quarantine(df: DataFrame, entity: str, run_id: str, batch_id: str) -> None:
