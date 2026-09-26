@@ -102,6 +102,10 @@ SOURCES = {
         "https://learn.microsoft.com/fabric/data-warehouse/tables",
         "ms.date 2026-04-03",
     ),
+    "transactions": (
+        "https://learn.microsoft.com/fabric/data-warehouse/transactions",
+        "ms.date 2026-06-03",
+    ),
     "create-table": (
         "https://learn.microsoft.com/sql/t-sql/statements/"
         "create-table-azure-sql-data-warehouse?view=fabric",
@@ -203,6 +207,20 @@ BANNED_SEQUENCES: list[tuple[str, tuple[str, ...], str, str, str]] = [
     ("FB013", ("predict",), "PREDICT is not supported in Warehouse", "surface-area", ERROR),
     ("FB014", ("sp_showspaceused",), "sp_showspaceused is not supported", "surface-area", ERROR),
     ("FB003", ("next", "value", "for"), "sequences are not supported", "tables", ERROR),
+    # The transactions page lists these four under Limitations. They matter to this repo because
+    # every gold load proc wraps its writes in an explicit transaction, so the one construct a
+    # SQL Server habit would reach for — a named transaction, to make nested BEGIN/COMMIT pairs
+    # legible — is exactly the one Fabric refuses.
+    ("FB020", ("begin", "distributed", "transaction"),
+     "distributed transactions are not supported", "transactions", ERROR),
+    ("FB020", ("begin", "distributed", "tran"),
+     "distributed transactions are not supported", "transactions", ERROR),
+    ("FB021", ("save", "transaction"),
+     "save points are not supported; a failed statement rolls the whole transaction back",
+     "transactions", ERROR),
+    ("FB021", ("save", "tran"),
+     "save points are not supported; a failed statement rolls the whole transaction back",
+     "transactions", ERROR),
 ]
 
 
@@ -340,6 +358,35 @@ def _global_temp_tables(stmt: Statement, path: str) -> list[Finding]:
                 f"global temporary table ##{toks[i + 2].text} — only session-scoped #temp tables "
                 "are supported",
                 "tables"))
+    return out
+
+
+def _transaction_names(stmt: Statement, path: str) -> list[Finding]:
+    """Named and marked transactions are unsupported; `BEGIN TRAN;` must be anonymous.
+
+    Detected by looking at the *token type* of what follows `TRAN`/`TRANSACTION` rather than by
+    counting words, because `split_statements` segments on semicolons only: a `BEGIN TRAN` written
+    without its terminator runs into the next statement and would otherwise be reported as named
+    because `INSERT` followed it. An identifier or string is a name; a statement keyword is not.
+    """
+    out: list[Finding] = []
+    named_tokens = (TokenType.VAR, TokenType.IDENTIFIER, TokenType.STRING)
+    for i in range(len(stmt.words) - 2):
+        if stmt.words[i] not in ("begin", "commit", "rollback"):
+            continue
+        if stmt.words[i + 1] not in ("tran", "transaction"):
+            continue
+        verb = stmt.words[i].upper()
+        if stmt.words[i + 2] == "with" and stmt.words[i + 3:i + 4] == ["mark"]:
+            out.append(stmt.finding(
+                i + 2, "FB021", ERROR,
+                "marked transactions (WITH MARK) are not supported", "transactions", path))
+        elif stmt.anchor[i + 2].token_type in named_tokens:
+            out.append(stmt.finding(
+                i + 2, "FB020", ERROR,
+                f"named transactions are not supported; write {verb} TRAN with no name "
+                f"(found {stmt.anchor[i + 2].text!r})",
+                "transactions", path))
     return out
 
 
@@ -834,6 +881,7 @@ def _sql_statements(sql: str) -> list[tuple[str, int]]:
 TOKEN_RULES = (
     _banned_phrases,
     _global_temp_tables,
+    _transaction_names,
     _identifier_limits,
     _constraint_enforcement,
     _create_table_rules,

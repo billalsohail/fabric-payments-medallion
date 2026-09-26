@@ -53,6 +53,14 @@ VIOLATIONS: list[tuple[str, str]] = [
     # src/warehouse/ddl/, because prose comments contain semicolons and the splitter used to shred
     # commented files into fragments.
     ("FB019", "THROW 51000, 'batch not found', 1;"),
+    # Transactions. Every gold load proc opens one, so these four are the rules most likely to be
+    # tripped by SQL Server habit rather than by carelessness.
+    ("FB020", "BEGIN TRAN load_gold;"),
+    ("FB020", "COMMIT TRAN load_gold;"),
+    ("FB020", "ROLLBACK TRANSACTION load_gold;"),
+    ("FB020", "BEGIN DISTRIBUTED TRANSACTION;"),
+    ("FB021", "SAVE TRANSACTION before_facts;"),
+    ("FB021", "BEGIN TRANSACTION WITH MARK 'nightly load';"),
     # Table definition
     ("FB101", "CREATE TABLE dbo.t (id bigint) WITH (DISTRIBUTION = HASH(id));"),
     ("FB101", "CREATE TABLE dbo.t (id bigint) WITH (CLUSTERED COLUMNSTORE INDEX);"),
@@ -153,6 +161,16 @@ BEGIN
     SELECT currency_code FROM ranked WHERE rn = 1;
 
     TRUNCATE TABLE #stg;
+
+    -- Anonymous, unnested, no save point. This is the only transaction shape Fabric accepts, and it
+    -- is the shape every proc in src/warehouse/procs/ uses, so a false positive here would be a
+    -- linter that rejects the repo's own gold layer.
+    BEGIN TRAN;
+        DELETE FROM gold.dim_currency WHERE currency_sk = -1;
+        INSERT INTO gold.dim_currency
+            (currency_sk, currency_code, currency_name, minor_unit_digits, _loaded_at)
+        VALUES (-1, 'N/A', 'Unknown', 0, @loaded_at);
+    COMMIT TRAN;
 END;
 """
 
