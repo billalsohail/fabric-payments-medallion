@@ -91,6 +91,53 @@ def config() -> RuntimeConfig:
 
 
 # --------------------------------------------------------------------------------------
+# Java discovery
+# --------------------------------------------------------------------------------------
+
+# Homebrew installs `openjdk@17` keg-only: it is never symlinked onto PATH and never registered with
+# macOS, so `java -version` and `/usr/libexec/java_home` both report no runtime even though a working
+# JDK is on disk. PySpark then fails with JAVA_GATEWAY_EXITED, which names neither the cause nor the
+# fix. Ordered by preference: 17 is the Fabric Spark 3.5 runtime's JDK, so it comes first.
+_JDK_CANDIDATES = (
+    "/opt/homebrew/opt/openjdk@17",
+    "/usr/local/opt/openjdk@17",
+    "/Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home",
+    "/opt/homebrew/opt/openjdk@11",
+    "/opt/homebrew/opt/openjdk",
+)
+
+
+def _ensure_java_home() -> str:
+    """Resolve and export ``JAVA_HOME`` for the local Spark JVM.
+
+    Done here rather than in a shell profile or the Makefile so that ``pytest``, ``uv run`` and a
+    bare ``python -m`` all behave identically. An environment fix that lives in one entry point is a
+    fix that the next entry point rediscovers as a bug.
+    """
+    existing = os.environ.get("JAVA_HOME", "").strip()
+    if existing and (Path(existing) / "bin" / "java").exists():
+        return existing
+
+    for candidate in _JDK_CANDIDATES:
+        home = Path(candidate)
+        # Homebrew's keg has the real JDK one level down; accept either layout.
+        for home in (home, home / "libexec" / "openjdk.jdk" / "Contents" / "Home"):
+            if (home / "bin" / "java").exists():
+                os.environ["JAVA_HOME"] = str(home)
+                logger.info("JAVA_HOME resolved to %s", home)
+                return str(home)
+
+    raise RuntimeError(
+        "No Java runtime found for local Spark. PySpark 3.5 needs a JDK 17 (the version the Fabric "
+        "Spark 3.5 runtime uses).\n"
+        "  brew install openjdk@17\n"
+        "Homebrew installs it keg-only, so nothing needs to go on PATH — this module finds it at "
+        f"one of: {', '.join(_JDK_CANDIDATES)}.\n"
+        "Set JAVA_HOME explicitly if your JDK lives elsewhere."
+    )
+
+
+# --------------------------------------------------------------------------------------
 # Spark session
 # --------------------------------------------------------------------------------------
 
@@ -115,6 +162,8 @@ def get_spark():
         )
 
     from delta import configure_spark_with_delta_pip
+
+    _ensure_java_home()
 
     # Spark launches Python workers via `python3` from PATH unless told otherwise, which on this
     # machine is 3.14 while the venv driver is 3.11 — Spark refuses to run across minor versions.
@@ -161,6 +210,36 @@ def landing_path(entity: str, ingest_date: date | str | None = None) -> str:
     if cfg.is_fabric:
         return f"Files/landing/{suffix}"
     return str(cfg.onelake_root / "files" / "landing" / suffix)
+
+
+def list_landing_partitions(entity: str) -> list[str]:
+    """Available ``ingest_date`` partition values for a landing entity, sorted ascending.
+
+    Deliberately a **filesystem listing** rather than ``SELECT DISTINCT ingest_date`` over the feed.
+    The DataFrame route makes Spark infer a schema across every file in the entity just to discover
+    which days exist, which for a JSON feed means reading the whole feed. Deciding *what* to read
+    must not cost as much as reading it — that is the difference between an incremental load and an
+    incremental-looking one.
+
+    Returns ``[]`` when the entity has never landed, which callers treat as "nothing to do" rather
+    than as an error: a feed that has not produced a file yet is a normal Monday, not a failure.
+    """
+    root = landing_path(entity)
+    cfg = config()
+    if cfg.is_fabric:  # pragma: no cover — requires a Fabric kernel
+        import notebookutils  # noqa: PLC0415
+
+        try:
+            entries = notebookutils.fs.ls(root)
+        except Exception:  # noqa: BLE001 — a missing directory is "no partitions"
+            return []
+        names = [e.name.rstrip("/") for e in entries]
+    else:
+        base = Path(root)
+        if not base.is_dir():
+            return []
+        names = [p.name for p in base.iterdir() if p.is_dir()]
+    return sorted(n.split("=", 1)[1] for n in names if n.startswith("ingest_date="))
 
 
 def table_ref(layer: Layer | str, name: str) -> str:

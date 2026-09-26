@@ -29,8 +29,29 @@ pythonpath = ["."]
 testpaths = ["tests"]
 markers = [
     "slow: end-to-end runs; deselect with -m 'not slow'",
+    "uses_isolated_lake: builds its own lake root rather than sharing the module's",
 ]
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# `src` is a genuine package here, not the src-layout convention. The reason is deployment parity:
+# on Fabric this repo is installed into a Spark Environment as a library, so a notebook's
+# `from src.runtime import params` resolves out of site-packages. An editable install reproduces
+# exactly that, which is what lets a notebook be executed directly — the way the Fabric kernel
+# executes it — rather than only via `python -m` from the repo root. Packages are listed explicitly
+# because auto-discovery guesses, and a guess that differs between here and the Environment is the
+# kind of drift this repo exists to avoid.
+packages = [
+    "src",
+    "src.runtime",
+    "src.lib",
+    "src.notebooks",
+    "orchestration",
+]

@@ -11,6 +11,8 @@ spark-warehouse/
 metastore_db/
 derby.log
 # build output
+*.egg-info/
+.venv/.stamp
 dashboard/out/
 *.log
 .DS_Store
