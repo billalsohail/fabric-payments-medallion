@@ -52,7 +52,11 @@ VIOLATIONS: list[tuple[str, str]] = [
     # than imply it did. This is the rule that revealed the AST pass was blind on most of
     # src/warehouse/ddl/, because prose comments contain semicolons and the splitter used to shred
     # commented files into fragments.
-    ("FB019", "THROW 51000, 'batch not found', 1;"),
+    # Not a bare `THROW`, which is query-free procedural scaffolding and is now exempted by name
+    # so that ten stored procedures do not contribute thirty permanent warnings. This fixture is
+    # the boundary of that exemption: procedural on its first keyword, but containing a subquery,
+    # which is exactly where skipping the AST pass would cost real coverage.
+    ("FB019", "IF EXISTS (SELECT 1 FROM sys.tables WHERE name = 'dim_account') BEGIN SET @v = 1; END"),
     # Transactions. Every gold load proc opens one, so these four are the rules most likely to be
     # tripped by SQL Server habit rather than by carelessness.
     ("FB020", "BEGIN TRAN load_gold;"),
@@ -61,6 +65,7 @@ VIOLATIONS: list[tuple[str, str]] = [
     ("FB020", "BEGIN DISTRIBUTED TRANSACTION;"),
     ("FB021", "SAVE TRANSACTION before_facts;"),
     ("FB021", "BEGIN TRANSACTION WITH MARK 'nightly load';"),
+    ("FB023", "SET @rows_inserted = @@ROWCOUNT;"),
     # The rule that reshaped the gold layer before a proc was written: the SCD2 re-sync every
     # dimension needs would naturally be an `UPDATE ... FROM`, local SQL Server accepts it, and
     # Fabric does not.
@@ -217,6 +222,45 @@ def test_a_merge_update_branch_is_not_an_update_from() -> None:
         "WHEN MATCHED AND tgt.valid_to <> src.valid_to THEN UPDATE SET tgt.valid_to = src.valid_to;"
     )
     assert not lint_sql(sql, "t.sql")
+
+
+def test_query_free_procedural_scaffolding_is_not_reported() -> None:
+    """The proc contract's own statements must lint silently, or FB019 becomes background noise.
+
+    Every proc in src/warehouse/procs/ is built from `DECLARE`, `SET`, `IF XACT_STATE() <> 0
+    ROLLBACK TRAN` and `THROW`. sqlglot's TSQL dialect parses none of them, and before the
+    exemption each one raised FB019 — roughly thirty warnings across the gold layer, on code that
+    contains nothing any AST rule has an opinion about. A warning class that fires thirty times on
+    correct code is a warning class nobody reads, and FB019's entire job is to be read: it is the
+    linter admitting it did not inspect something.
+    """
+    for sql in (
+        "DECLARE @rows bigint = 0;",
+        "SET @msg = CONCAT('spans ', @n, ' days; widen the tally');",
+        "IF XACT_STATE() <> 0 ROLLBACK TRAN;",
+        "THROW 50001, @msg, 1;",
+        "BEGIN TRAN;",
+        "COMMIT TRAN;",
+    ):
+        assert not lint_sql(sql, "t.sql"), sql
+
+
+def test_a_semicolon_inside_a_string_literal_does_not_shred_the_batch() -> None:
+    """The statement splitter must not end a statement on a quoted semicolon.
+
+    This is the same bug `_blank_line_comments` fixed for prose, in its other half. A split in the
+    wrong place does not merely produce one unparseable fragment — it glues the tail of the string
+    onto the head of the *next* statement, so that statement is never parsed either and every AST
+    rule is skipped for it. The planted `UPDATE ... FROM` below is what proves the damage is real:
+    it must still be caught despite following an error message that contains a semicolon.
+    """
+    sql = (
+        "THROW 50001, 'spans 12000 days; widen the tally', 1;\n"
+        "UPDATE dbo.dim_account SET valid_to = s.valid_to "
+        "FROM stg.dim_account AS s WHERE s.account_id = dbo.dim_account.account_id;"
+    )
+    codes = {f.rule for f in lint_sql(sql, "t.sql")}
+    assert "FB022" in codes, [f.render() for f in lint_sql(sql, "t.sql")]
 
 
 def test_identity_is_not_banned() -> None:

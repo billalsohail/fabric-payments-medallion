@@ -111,6 +111,10 @@ SOURCES = {
         "create-table-azure-sql-data-warehouse?view=fabric",
         "ms.date 2025-12-29",
     ),
+    "rowcount": (
+        "https://learn.microsoft.com/sql/t-sql/functions/rowcount-transact-sql?view=fabric",
+        "ms.date 2024-06-06",
+    ),
     "update": (
         "https://learn.microsoft.com/sql/t-sql/queries/update-transact-sql?view=fabric",
         "ms.date 2025-01-29",
@@ -225,6 +229,24 @@ BANNED_SEQUENCES: list[tuple[str, tuple[str, ...], str, str, str]] = [
     ("FB021", ("save", "tran"),
      "save points are not supported; a failed statement rolls the whole transaction back",
      "transactions", ERROR),
+    # A warning, not an error, and the severity is the honest part. The @@ROWCOUNT reference page
+    # carries `=fabric` in its moniker range but its rendered Applies-to banner names "SQL database
+    # in Microsoft Fabric" and *not* "Warehouse in Microsoft Fabric" — unlike SYSDATETIME and
+    # TRY...CATCH, whose banners do name Warehouse, which is what makes the omission worth noticing
+    # rather than dismissing as a rendering artefact. So: not established as unsupported, and not
+    # established as supported either.
+    #
+    # The second reason stands on its own even if it is supported. The same page states that
+    # BEGIN TRANSACTION and COMMIT TRANSACTION reset @@ROWCOUNT to 0, and every proc in
+    # src/warehouse/procs/ interleaves transactions with the DML whose rows it wants to count. A
+    # counter the transaction boundary silently zeroes is a load-log column that reads 0 on a
+    # successful load, which is worse than no column. Count with COUNT_BIG over the same predicate
+    # instead — deterministic, and it means "rows that qualified" rather than "rows the previous
+    # statement happened to touch".
+    ("FB023", ("@", "@", "rowcount"),
+     "@@ROWCOUNT is not documented as applying to Warehouse in Microsoft Fabric, and BEGIN/COMMIT "
+     "TRANSACTION reset it to 0; count with COUNT_BIG over the same predicate instead",
+     "rowcount", WARN),
 ]
 
 
@@ -757,6 +779,35 @@ _MASK_CLAUSE = re.compile(
 # that creates a schema, which trains the reader to ignore that warning.
 _AST_EXEMPT = re.compile(r"^\s*CREATE\s+SCHEMA\b", re.IGNORECASE)
 
+# Procedural scaffolding that sqlglot's TSQL dialect does not parse: `IF <cond> BEGIN ... END`,
+# `THROW`, `DECLARE`, bare `SET @v = ...`, and the transaction verbs. Every stored procedure in
+# src/warehouse/procs/ is built from these, and without this exemption each proc would contribute
+# two or three permanent FB019 warnings — which is how a warning class stops being read, and FB019
+# is the one warning in this file that must never be background noise.
+#
+# The exemption is *conditional on the fragment containing no query at all*, and that condition is
+# the whole design. `IF EXISTS (SELECT ...)` and `SET @v = (SELECT ... FROM t)` are procedural on
+# their first keyword but contain exactly the constructs the AST rules check, so a leading-keyword
+# test on its own would have handed the linter a blind spot shaped like a subquery. A fragment that
+# mentions any of SELECT/INSERT/UPDATE/DELETE/MERGE/WITH is therefore *not* exempt: it is parsed,
+# and if it will not parse, FB019 says so. What is skipped here is only the genuinely query-free
+# scaffolding, against which no AST rule in this file has anything to say.
+#
+# The token rules run on every fragment regardless — this exemption narrows the AST pass only, so
+# FB001-FB014, FB016 and FB023 still apply inside proc bodies.
+_PROCEDURAL_HEAD = re.compile(
+    r"^\s*(?:BEGIN|END|IF|ELSE|WHILE|THROW|DECLARE|SET|EXEC(?:UTE)?|RETURN|"
+    r"COMMIT|ROLLBACK|TRUNCATE)\b",
+    re.IGNORECASE,
+)
+_QUERY_KEYWORD = re.compile(
+    r"\b(?:SELECT|INSERT|UPDATE|DELETE|MERGE|WITH)\b", re.IGNORECASE
+)
+
+
+def _is_query_free_scaffolding(text: str) -> bool:
+    return bool(_PROCEDURAL_HEAD.match(text)) and not _QUERY_KEYWORD.search(text)
+
 
 def _ast_rules(sql: str, path: str) -> list[Finding]:
     """Parse statement-by-statement, so one exotic statement cannot blind the whole pass.
@@ -774,7 +825,7 @@ def _ast_rules(sql: str, path: str) -> list[Finding]:
     """
     out: list[Finding] = []
     for text, line in _sql_statements(sql):
-        if _AST_EXEMPT.match(text):
+        if _AST_EXEMPT.match(text) or _is_query_free_scaffolding(text):
             continue
         try:
             tree = sqlglot.parse_one(_MASK_CLAUSE.sub("", text), dialect="tsql")
@@ -918,17 +969,77 @@ def _blank_line_comments(sql: str) -> str:
     return "".join(out)
 
 
+def _split_on_statement_semicolons(sql: str) -> list[str]:
+    """Split on `;`, ignoring semicolons inside string literals and bracketed identifiers.
+
+    An earlier version was a bare `sql.split(";")`, with a docstring arguing that a semicolon inside
+    a string literal was harmless because the two resulting fragments would merely fail to parse and
+    be reported as FB019. That argument was wrong in a way worth recording, because it is the same
+    mistake `_blank_line_comments` was written to fix.
+
+    The cost is not the unparseable fragment. It is the fragment *after* it: a split in the wrong
+    place merges the tail of one statement with the head of the next, and that combined fragment
+    fails to parse too — so every AST rule is skipped for a statement nobody wrote a string literal
+    in. FB019 does report it, which is the only reason this was noticed at all rather than being
+    silent. But "the AST pass quietly stopped checking the rest of this batch" is exactly the
+    failure mode the linter exists to not have, and this repo's own prose style guarantees the
+    trigger: `THROW 50001, 'spans N days; widen the tally', 1;` is an ordinary error message.
+
+    Bracketed identifiers are tracked as well as strings. `[my;table]` is legal T-SQL and the same
+    reasoning applies; sqlglot's tokenizer treats it as one token, so this function has to as well.
+    Doubled quotes (`''`) and doubled brackets (`]]`) are escapes, not terminators.
+    """
+    out: list[str] = []
+    start = 0
+    i = 0
+    n = len(sql)
+    in_string = False
+    in_bracket = False
+    while i < n:
+        ch = sql[i]
+        if in_string:
+            if ch == "'":
+                if i + 1 < n and sql[i + 1] == "'":
+                    i += 2
+                    continue
+                in_string = False
+            i += 1
+        elif in_bracket:
+            if ch == "]":
+                if i + 1 < n and sql[i + 1] == "]":
+                    i += 2
+                    continue
+                in_bracket = False
+            i += 1
+        elif ch == "'":
+            in_string = True
+            i += 1
+        elif ch == "[":
+            in_bracket = True
+            i += 1
+        elif ch == ";":
+            out.append(sql[start:i])
+            i += 1
+            start = i
+        else:
+            i += 1
+    out.append(sql[start:])
+    return out
+
+
 def _sql_statements(sql: str) -> list[tuple[str, int]]:
     """Comment-stripped `;` split, each fragment paired with the line its first non-blank character
     is on.
 
-    Good enough for the AST pass, which cares about query shape: a `;` inside a string literal would
-    at worst yield two fragments that fail to parse and are reported as FB019. The token pass, which
-    does the precise work, segments on real `SEMICOLON` tokens instead.
+    The split itself is string- and bracket-aware; see `_split_on_statement_semicolons`. It is still
+    not a parser — a `CREATE PROCEDURE` body arrives here as a series of fragments rather than one
+    statement, because its inner `;`s are real statement terminators. That is fine and is checked by
+    a test: the fragments parse individually, so the AST rules do reach inside proc bodies, which is
+    where all of the gold layer's DML lives.
     """
     out: list[tuple[str, int]] = []
     line = 1
-    for chunk in _blank_line_comments(sql).split(";"):
+    for chunk in _split_on_statement_semicolons(_blank_line_comments(sql)):
         if chunk.strip():
             blank = len(chunk) - len(chunk.lstrip("\n\r \t"))
             out.append((chunk, line + chunk[:blank].count("\n")))
