@@ -31,9 +31,24 @@ reference data owned by the warehouse, not by a source system.
 changed rows appear, so daily arrival is cheap and it is the primary SCD2 driver (`risk_band` moves,
 and `_op = D` has to close a row rather than delete it). `customers` and `merchants` are *full*
 snapshots, and a daily full snapshot of every customer for 18 months would be ~137M rows of almost
-entirely unchanged data — neither realistic for master data nor laptop-sized. Monthly snapshots
-still give SCD2 genuine history to close out. The distinction is deliberate and worth stating: the
-arrival cadence a source can support is what determines whether you can afford full snapshots.
+entirely unchanged data — neither realistic for master data nor laptop-sized. The distinction is
+deliberate and worth stating: the arrival cadence a source can support is what determines whether you
+can afford full snapshots.
+
+**What monthly cadence costs, stated plainly.** Monthly snapshots give SCD2 history to close out, but
+the history is *coarse*: a customer whose segment changed on the 3rd and changed back on the 20th
+appears never to have changed at all, and one who changed once appears to have changed on the 1st of
+the following month. Every `valid_from` on `dim_customer` and `dim_merchant` is therefore a snapshot
+boundary, not a real change instant, and a point-in-time join against those two dimensions is accurate
+to the month. `dim_account` is accurate to the CDC row, because that feed is daily and carries
+`_change_ts`. Three dimensions, two different temporal resolutions, and reports that mix them inherit
+the coarser one — which is the sort of thing that should be written down somewhere a query author can
+find it rather than discovered from a suspicious trend.
+
+The coarseness is a property of the source, not of `src/lib/scd2.py`: hand the same code a daily
+snapshot and it produces daily versions. `nb_01_bronze_ingest`'s `until_date` parameter exists partly
+for this — it loads the feed a month at a time, which is what makes the monthly boundaries land as
+separate batches rather than as one snapshot inferred across the whole feed.
 
 ---
 
@@ -103,8 +118,20 @@ state, which is fewer than every state in the feed.
 
 ## `customers` — CSV, monthly full snapshot
 
-Contains PII. Masking is applied in the **gold** layer (`05_security.sql`), not silver: silver keeps
-the unmasked value so that reprocessing is possible, and access is controlled at the serving layer.
+Contains PII. Masking is applied in the **gold** layer, not silver: silver keeps the unmasked value
+so that reprocessing is possible, and access is controlled at the serving layer.
+
+Specifically, the `MASKED WITH` clauses are **inline in the `CREATE TABLE` in
+`src/warehouse/ddl/02_dimensions.sql`**, not in `05_security.sql` where an earlier draft of this page
+put them. The reason is a Fabric constraint, not a preference: `ALTER TABLE ... ALTER COLUMN` is in
+preview on Fabric Warehouse, so adding a mask after the fact is a preview dependency on the one part
+of the schema that carries PII. `05_security.sql` still owns the *access* side — the `sec` schema,
+the `GRANT UNMASK` templates and the RLS predicate — which is the part that is genuinely security
+configuration rather than column definition.
+
+And masking is presentation, not protection: an unprivileged principal sees a masked value, but the
+underlying data is unchanged and any principal with `UNMASK` sees all of it. It reduces casual
+exposure in a shared report. It is not a control you would cite in a DPIA.
 
 | Column | Type | Null | Notes |
 |---|---|---|---|

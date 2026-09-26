@@ -279,8 +279,26 @@ def test_fact_dimension_keys_are_not_nullable(tables, foreign_keys):
 
 
 def test_every_fact_and_dimension_has_a_primary_key(tables, keys):
+    """Scoped to `dbo`, and the scope is the interesting part.
+
+    `stg.*` mirrors the silver Delta schemas and carries the same `dim_`/`fact_` names, so the
+    obvious form of this test — every table whose name starts with `dim_` — demands primary keys on
+    seven staging tables that `06_staging.sql` says in as many words should have none: "No
+    constraints, no keys, no statistics". It is right about that. A Fabric `NOT ENFORCED` key is
+    metadata for the optimiser and a statement of intent to a reader; a truncate-and-fill table that
+    exists for the duration of one load has no readers to inform and no plan worth shaping, and
+    declaring keys on it would assert a uniqueness the staging load does not guarantee — silver's
+    dedupe does, one layer earlier.
+
+    So the model is `dbo`, and staging is not part of it. Naming that here rather than widening the
+    prefix list keeps the next `stg` table from silently acquiring an obligation.
+    """
     pk_tables = {k["table"] for k in keys if k["kind"] == "PRIMARY KEY"}
-    modelled = {t for t in tables if t.split(".")[1].startswith(("dim_", "fact_", "agg_"))}
+    modelled = {
+        t for t in tables
+        if t.startswith("dbo.") and t.split(".")[1].startswith(("dim_", "fact_", "agg_"))
+    }
+    assert modelled, "no modelled tables found — the DDL fixture is not parsing"
     assert modelled - pk_tables == set(), f"no PRIMARY KEY declared on: {sorted(modelled - pk_tables)}"
 
 

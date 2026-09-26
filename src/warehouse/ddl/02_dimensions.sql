@@ -20,15 +20,22 @@
 --     accepts is ALTER TABLE ... ADD CONSTRAINT ... NOT ENFORCED.
 --
 -- Surrogate keys are bigint and are assigned deterministically by the load procs — see the
--- header of procs/sp_load_dim_account.sql for why not IDENTITY, which *is* supported.
+-- header of procs/03_sp_load_dim_account.sql for why not IDENTITY, which *is* supported.
 --
--- Every dimension carries an **unknown member** at surrogate key -1. This is load-bearing
--- rather than decorative: with no enforced foreign keys, a fact row whose merchant is
--- absent from the dimension would join to NULL, and a NULL surrogate key silently drops
--- that row out of every measure sliced by merchant. Directing it to -1 instead means the
+-- Every dimension a fact joins to by surrogate key carries an **unknown member** at key -1.
+-- This is load-bearing rather than decorative: with no enforced foreign keys, a fact row whose
+-- merchant is absent from the dimension would join to NULL, and a NULL surrogate key silently
+-- drops that row out of every measure sliced by merchant. Directing it to -1 instead means the
 -- row count reconciles exactly and the loss is visible as an 'Unknown' bar on the report.
 -- The DQ layer is what stops unknowns from being routine; the -1 row is what stops an
 -- unknown from being invisible.
+--
+-- `dim_fx_rate` is the one exception, and the qualifier above is there for it. No fact carries
+-- `fx_rate_sk` — the FX join resolves a *rate*, which lands on `fact_transaction.fx_rate` as a
+-- value, not a key (see procs/06_sp_load_dim_fx_rate.sql). An unknown member exists so a failed
+-- lookup has somewhere to land; nothing looks this table up by key, so there is no lookup that
+-- could fail and nothing a -1 row would protect. It is also what permits that dimension to be
+-- truncated and rebuilt on every load while the other seven cannot be.
 -- =====================================================================================
 
 -- -------------------------------------------------------------------------------------
