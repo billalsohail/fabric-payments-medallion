@@ -206,7 +206,7 @@ def main(argv: list[str] | None = None) -> int:
     global RUN_ID  # noqa: PLW0603 — one run id per process, read by the stage closures
 
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--stages", default="bronze",
+    ap.add_argument("--stages", default="bronze,silver",
                     help="comma-separated subset of: " + ",".join(STAGES))
     ap.add_argument("--entities", default="",
                     help="comma-separated subset of entities; default is every enabled feed")
