@@ -1,0 +1,6 @@
+pyproject.toml
+src/fabric_payments_medallion.egg-info/PKG-INFO
+src/fabric_payments_medallion.egg-info/SOURCES.txt
+src/fabric_payments_medallion.egg-info/dependency_links.txt
+src/fabric_payments_medallion.egg-info/requires.txt
+src/fabric_payments_medallion.egg-info/top_level.txt

@@ -1,0 +1,36 @@
+[project]
+name = "fabric-payments-medallion"
+version = "0.1.0"
+description = "Payments medallion lakehouse — Fabric-targeted, locally runnable"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    # Pinned to the Microsoft Fabric Spark runtime pairing (Spark 3.5 / Delta 3.2).
+    # Version parity with the deployment target is deliberate — see docs/design-decisions.md.
+    "pyspark==3.5.3",
+    "delta-spark==3.2.1",
+    "faker==30.8.2",
+    "sqlglot==25.32.1",
+]
+
+[project.optional-dependencies]
+# pyodbc needs unixodbc + the MS ODBC driver, and is only required by the gold
+# bridge step (which does not exist on Fabric at all). Kept out of the core install
+# so the pipeline, the T-SQL linter and CI never depend on a database driver.
+gold = [
+    "pyodbc==5.2.0",
+]
+dev = [
+    "pytest==8.3.3",
+    "ruff==0.7.4",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+markers = [
+    "slow: end-to-end runs; deselect with -m 'not slow'",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
