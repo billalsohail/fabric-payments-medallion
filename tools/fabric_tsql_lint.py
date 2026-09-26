@@ -111,6 +111,10 @@ SOURCES = {
         "create-table-azure-sql-data-warehouse?view=fabric",
         "ms.date 2025-12-29",
     ),
+    "update": (
+        "https://learn.microsoft.com/sql/t-sql/queries/update-transact-sql?view=fabric",
+        "ms.date 2025-01-29",
+    ),
 }
 
 ERROR = "error"
@@ -811,6 +815,21 @@ def _ast_rules(sql: str, path: str) -> list[Finding]:
                         f"CTE {cte.alias_or_name!r} contains a nested CTE, which is a preview "
                         "feature; flatten it into a sequential CTE chain instead",
                         "surface-area"))
+
+        for update in tree.find_all(exp.Update):
+            # An AST rule rather than a token rule on purpose. `FROM` appears inside a perfectly
+            # legal single-table UPDATE whenever the SET list contains a subquery
+            # (`SET a = (SELECT MAX(x) FROM u)`), so a token scan for `UPDATE ... FROM` would reject
+            # supported SQL. Only the *statement's own* FROM clause is the unsupported one, and that
+            # distinction exists solely in the parse tree. sqlglot also leaves `from` unset on the
+            # `UPDATE SET` branch of a MERGE, which is what makes the SCD2 close-out below legal.
+            if update.args.get("from"):
+                out.append(Finding(
+                    path, line, 1, "FB022", ERROR,
+                    "the FROM clause cannot be specified in an UPDATE on Warehouse in Microsoft "
+                    "Fabric; only single-table UPDATE is supported — express the correlated update "
+                    "as a MERGE with a WHEN MATCHED branch",
+                    "update"))
 
         for create in tree.find_all(exp.Create):
             props = create.args.get("properties")

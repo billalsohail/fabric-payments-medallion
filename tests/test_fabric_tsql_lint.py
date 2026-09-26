@@ -61,6 +61,11 @@ VIOLATIONS: list[tuple[str, str]] = [
     ("FB020", "BEGIN DISTRIBUTED TRANSACTION;"),
     ("FB021", "SAVE TRANSACTION before_facts;"),
     ("FB021", "BEGIN TRANSACTION WITH MARK 'nightly load';"),
+    # The rule that reshaped the gold layer before a proc was written: the SCD2 re-sync every
+    # dimension needs would naturally be an `UPDATE ... FROM`, local SQL Server accepts it, and
+    # Fabric does not.
+    ("FB022", "UPDATE dbo.dim_account SET valid_to = s.valid_to "
+              "FROM stg.dim_account AS s WHERE s.account_id = dbo.dim_account.account_id;"),
     # Table definition
     ("FB101", "CREATE TABLE dbo.t (id bigint) WITH (DISTRIBUTION = HASH(id));"),
     ("FB101", "CREATE TABLE dbo.t (id bigint) WITH (CLUSTERED COLUMNSTORE INDEX);"),
@@ -185,6 +190,33 @@ def test_compliant_sql_is_accepted() -> None:
     """The load-bearing half of this file: no false positives on valid Fabric T-SQL."""
     findings = lint_sql(COMPLIANT, "good.sql")
     assert not findings, "\n".join(f.render() for f in findings)
+
+
+def test_a_from_inside_a_set_subquery_is_not_an_update_from() -> None:
+    """FB022's negative case, and the reason it is an AST rule rather than a token scan.
+
+    `SET a = (SELECT MAX(x) FROM u)` is a single-table UPDATE that Fabric supports; the word `FROM`
+    following `UPDATE` is not what makes a statement unsupported. A token-pass version of this rule
+    would have rejected supported SQL, which is the more expensive failure of the two — a linter
+    that blocks legal code gets switched off.
+    """
+    sql = "UPDATE dbo.dim_currency SET currency_name = (SELECT MAX(n) FROM stg.names) WHERE currency_sk = 1;"
+    assert not lint_sql(sql, "t.sql")
+
+
+def test_a_merge_update_branch_is_not_an_update_from() -> None:
+    """The SCD2 close-out shape every dimension proc uses must lint clean.
+
+    `MERGE ... WHEN MATCHED THEN UPDATE SET` reads a source table and updates a target, which is
+    semantically the thing `UPDATE ... FROM` would have done — so if FB022 fired here the rule would
+    have banned both the unsupported construct and its only supported replacement.
+    """
+    sql = (
+        "MERGE dbo.dim_account AS tgt USING stg.dim_account AS src "
+        "ON tgt.account_id = src.account_id AND tgt.valid_from = src.valid_from "
+        "WHEN MATCHED AND tgt.valid_to <> src.valid_to THEN UPDATE SET tgt.valid_to = src.valid_to;"
+    )
+    assert not lint_sql(sql, "t.sql")
 
 
 def test_identity_is_not_banned() -> None:
