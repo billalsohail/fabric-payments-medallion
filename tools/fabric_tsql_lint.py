@@ -834,26 +834,69 @@ def _blank_line_comments(sql: str) -> str:
     Columns are preserved rather than the comment simply being dropped, because every `Finding`
     carries a position a reader is expected to be able to jump to.
 
-    A `--` inside a string literal is left alone by tracking quote parity along the line. That is
-    not a full lexer, and it does not need to be: the token pass already segments on real
-    `SEMICOLON` tokens from sqlglot's own tokenizer, so this function's only job is to stop prose
-    from masquerading as SQL.
+    `/* ... */` blocks are blanked too, and they are the reason this is a single pass over the whole
+    string rather than a loop over lines: a block comment's state carries across newlines, so a
+    line-at-a-time scanner cannot know whether it starts inside one. Handling only `--` was a
+    narrower version of the same blindness FB019 exposed — the first `/* */` header containing a
+    semicolon, which is to say the first one written in this repo's prose style, would have shredded
+    its file into fragments again.
+
+    A `--` or `/*` inside a string literal is left alone by tracking quote parity, doubled `''`
+    included. That is not a full lexer, and it does not need to be: the token pass already segments
+    on real `SEMICOLON` tokens from sqlglot's own tokenizer, so this function's only job is to stop
+    prose from masquerading as SQL.
     """
     out: list[str] = []
-    for line in sql.splitlines():
-        in_string = False
-        cut = None
-        i = 0
-        while i < len(line):
-            ch = line[i]
-            if ch == "'":
-                in_string = not in_string
-            elif ch == "-" and not in_string and line[i:i + 2] == "--":
-                cut = i
-                break
+    in_string = False
+    depth = 0
+    i = 0
+    n = len(sql)
+    while i < n:
+        ch = sql[i]
+        if depth:
+            # T-SQL block comments **nest**: `/* a /* b */ c */` is one comment, and sqlglot's
+            # tokenizer models that. Closing on the first `*/` would end the comment at `b`, hand
+            # `c */` to the AST pass as SQL, and put this function back out of step with the
+            # tokenizer it exists to feed.
+            if sql[i:i + 2] == "/*":
+                depth += 1
+                out.append("  ")
+                i += 2
+            elif sql[i:i + 2] == "*/":
+                depth -= 1
+                out.append("  ")
+                i += 2
+            else:
+                out.append(ch if ch == "\n" else " ")
+                i += 1
+        elif in_string:
+            # `''` is an escaped quote inside a literal, not a close followed by an open. Tracking it
+            # matters because getting it wrong inverts quote parity for the rest of the file.
+            if ch == "'" and sql[i:i + 2] == "''":
+                out.append("''")
+                i += 2
+            else:
+                if ch == "'":
+                    in_string = False
+                out.append(ch)
+                i += 1
+        elif ch == "'":
+            in_string = True
+            out.append(ch)
             i += 1
-        out.append(line if cut is None else line[:cut] + " " * (len(line) - cut))
-    return "\n".join(out)
+        elif sql[i:i + 2] == "--":
+            end = sql.find("\n", i)
+            end = n if end == -1 else end
+            out.append(" " * (end - i))
+            i = end
+        elif sql[i:i + 2] == "/*":
+            out.append("  ")
+            depth = 1
+            i += 2
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
 
 
 def _sql_statements(sql: str) -> list[tuple[str, int]]:

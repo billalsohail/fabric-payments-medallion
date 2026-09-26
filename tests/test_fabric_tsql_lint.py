@@ -210,3 +210,28 @@ def test_unparseable_input_is_reported_not_swallowed() -> None:
     # Incomplete DDL either tokenizes (and the column rules apply) or does not (FB000). Either way
     # the tool must not silently return clean.
     assert isinstance(findings, list)
+
+
+def test_a_block_comment_cannot_shred_a_statement() -> None:
+    """The `/* */` half of the bug FB019 exposed.
+
+    Prose contains semicolons; this repo's SQL is more prose than SQL. A header comment with a
+    semicolon in it used to split the file it documented into fragments, every one of which failed
+    to parse and was reported as FB019 — so the AST pass ran on nothing while the summary line said
+    the file was fine. The assertion is therefore specifically that the statement *after* a
+    semicolon-bearing block comment is still parsed, not merely that nothing was reported.
+    """
+    sql = (
+        "/* A header; it contains a semicolon, an apostrophe in gold's name, and a /* nested\n"
+        "   comment */ of the kind T-SQL allows and sqlglot's tokenizer tracks. */\n"
+        "CREATE TABLE dbo.t (a bigint DEFAULT 0);\n"
+    )
+    findings = lint_sql(sql, "t.sql")
+    fired = {f.rule for f in findings}
+    assert "FB104" in fired, f"the statement after the comment was not analysed; got {sorted(fired)}"
+    assert "FB019" not in fired, [f.render() for f in findings]
+
+
+def test_a_comment_marker_inside_a_string_is_not_a_comment() -> None:
+    sql = "CREATE TABLE dbo.t (a bigint);\nSELECT '-- /* not a comment */' AS note, 1 AS n;\n"
+    assert not lint_sql(sql, "t.sql")
