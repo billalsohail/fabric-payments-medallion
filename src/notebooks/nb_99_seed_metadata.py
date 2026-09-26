@@ -60,6 +60,15 @@ PARAMS = params.resolve({"reset": False})
 #   activity hands pipeline expressions strings, and a config schema that only works from Spark
 #   isn't config. Parsed at the point of use.
 # - **`scd_type`** is `0` (no history), `1` (overwrite) or `2` (full history). Three feeds are `2`.
+# - **`effective_from_column`** is the column silver orders a key's changes by, and it becomes
+#   `valid_from` in an SCD2 dimension. It is config rather than a convention because the three SCD2
+#   feeds disagree about it for real reasons: `accounts` is CDC and carries `_change_ts` per change,
+#   while `customers` and `merchants` are snapshots where the only defensible effective instant is
+#   the snapshot's own date. Hard-coding "use `_change_ts`" would work for one feed of the three.
+# - **`op_column`** names the CDC operation flag, and is null for every feed that does not have one.
+#   Only `accounts` does — a snapshot expresses a deletion by omitting the row, not by flagging it,
+#   which is why a snapshot feed's deletions are invisible to SCD2 here and stated as such in
+#   `docs/design-decisions.md`.
 # - **`priority`** is the execution wave, and it encodes a real dependency rather than a preference:
 #   dimensions load before facts because `transactions` carries a `referential` rule against
 #   `dim_merchant`. Run the fact first and that rule checks against a stale dimension, quarantining
@@ -77,6 +86,8 @@ SOURCE_CONFIG = [
         watermark_column="ingest_date",
         merge_keys="transaction_id",
         scd_type=0,
+        effective_from_column="auth_ts",
+        op_column=None,
         dq_rule_set="transactions",
         partition_column="ingest_date",
         reprocess_window_days=None,
@@ -94,6 +105,8 @@ SOURCE_CONFIG = [
         watermark_column="ingest_date",
         merge_keys="account_id",
         scd_type=2,
+        effective_from_column="_change_ts",
+        op_column="_op",
         dq_rule_set="accounts",
         partition_column="ingest_date",
         reprocess_window_days=None,
@@ -110,6 +123,8 @@ SOURCE_CONFIG = [
         watermark_column="ingest_date",
         merge_keys="customer_id",
         scd_type=2,
+        effective_from_column="_snapshot_date",
+        op_column=None,
         dq_rule_set="customers",
         partition_column="ingest_date",
         reprocess_window_days=None,
@@ -126,6 +141,8 @@ SOURCE_CONFIG = [
         watermark_column="ingest_date",
         merge_keys="merchant_id",
         scd_type=2,
+        effective_from_column="_snapshot_date",
+        op_column=None,
         dq_rule_set="merchants",
         partition_column="ingest_date",
         reprocess_window_days=None,
@@ -142,6 +159,8 @@ SOURCE_CONFIG = [
         watermark_column="ingest_date",
         merge_keys="dispute_id",
         scd_type=0,
+        effective_from_column="_event_ts",
+        op_column=None,
         dq_rule_set="disputes",
         partition_column="ingest_date",
         # Disputes are raised 0-90 days after the transaction they dispute. Processing only new
@@ -160,6 +179,8 @@ SOURCE_CONFIG = [
         watermark_column="ingest_date",
         merge_keys="rate_date,from_currency",
         scd_type=0,
+        effective_from_column="rate_date",
+        op_column=None,
         dq_rule_set="fx_rates",
         partition_column="ingest_date",
         reprocess_window_days=None,
@@ -177,6 +198,8 @@ SOURCE_CONFIG = [
         watermark_column=None,
         merge_keys="card_product_code",
         scd_type=1,
+        effective_from_column=None,
+        op_column=None,
         dq_rule_set="card_products",
         partition_column="ingest_date",
         reprocess_window_days=None,
@@ -195,6 +218,8 @@ SOURCE_CONFIG_SCHEMA = StructType([
     StructField("watermark_column", StringType(), True),
     StructField("merge_keys", StringType(), False),        # comma-separated
     StructField("scd_type", IntegerType(), False),
+    StructField("effective_from_column", StringType(), True),
+    StructField("op_column", StringType(), True),
     StructField("dq_rule_set", StringType(), False),
     StructField("partition_column", StringType(), True),
     StructField("reprocess_window_days", IntegerType(), True),
@@ -388,6 +413,10 @@ DQ_RULES_SCHEMA = StructType([
 # %%
 WATERMARK_SCHEMA = StructType([
     StructField("entity", StringType(), False),
+    # One row per (entity, layer): bronze and silver advance independently, and silver is routinely a
+    # day behind. See the header of `src/lib/watermark.py` for why this is a column rather than a
+    # prefix on the entity name.
+    StructField("layer", StringType(), False),
     StructField("watermark_value", StringType(), True),
     StructField("last_batch_id", StringType(), True),
     StructField("updated_ts", TimestampType(), True),
@@ -429,6 +458,10 @@ RUN_LOG_SCHEMA = StructType([
     StructField("rows_read", LongType(), True),
     StructField("rows_written", LongType(), True),
     StructField("rows_quarantined", LongType(), True),
+    # Rows dropped as duplicates, kept apart from `rows_quarantined`: the reconciliation
+    # `bronze = silver + quarantined + deduped` can only *check* the pipeline if it does not have to
+    # derive one of its own terms from the other two.
+    StructField("rows_deduped", LongType(), True),
     StructField("error_message", StringType(), True),
 ])
 
@@ -459,7 +492,8 @@ def seed_source_config() -> int:
         (
             c["entity"], c["source_format"], json.dumps(c["read_options"], sort_keys=True),
             c["target_table"], c["load_type"], c["watermark_column"], c["merge_keys"],
-            c["scd_type"], c["dq_rule_set"], c["partition_column"], c["reprocess_window_days"],
+            c["scd_type"], c["effective_from_column"], c["op_column"],
+            c["dq_rule_set"], c["partition_column"], c["reprocess_window_days"],
             c["allow_schema_evolution"], c["priority"], c["enabled"],
         )
         for c in SOURCE_CONFIG

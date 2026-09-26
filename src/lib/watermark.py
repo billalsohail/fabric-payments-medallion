@@ -1,9 +1,19 @@
 """Watermark state for incremental loads.
 
-One row per entity in `meta_watermark`, holding the highest `ingest_date` successfully ingested.
-Stored as a **string**, not a date or a timestamp: the same table has to be readable from a Data
-Factory pipeline expression, where everything is a string, and a watermark that only works from
-Spark is not usable by the orchestrator that is supposed to drive it.
+One row per **(entity, layer)** in `meta_watermark`, holding the highest `ingest_date` successfully
+processed by that layer. Stored as a **string**, not a date or a timestamp: the same table has to be
+readable from a Data Factory pipeline expression, where everything is a string, and a watermark that
+only works from Spark is not usable by the orchestrator that is supposed to drive it.
+
+Why `layer` is a column and not part of the key string. Bronze and silver both advance a watermark
+for the same entity and they advance at different rates — silver can be a day behind bronze while a
+DQ breach is investigated, and on a `--entities` partial run it routinely is. A single row per entity
+would let whichever layer ran last overwrite the other's position, which shows up as silver silently
+skipping a day. The obvious alternative, keying on `f"silver:{entity}"`, is the concatenated
+composite key that `src/lib/scd2.py` refuses by name: a separator that can occur in the data is a
+collision waiting to be someone's incident, and an entity called `silver:x` is not impossible, just
+unlikely. So it is a real column, the merge matches on both, and the table stays partitioned by
+`entity` alone — two rows per entity does not justify a second partition level.
 
 The watermark is advanced only after a successful write. A failed run leaves it untouched, so the
 next attempt re-reads the same window — which is safe precisely because bronze deletes and
@@ -36,13 +46,17 @@ _CONCURRENCY_ERRORS = frozenset({
 })
 
 
-def get(entity: str) -> str | None:
-    """Current watermark for an entity, or None if it has never been loaded."""
+BRONZE = "bronze"
+SILVER = "silver"
+
+
+def get(entity: str, layer: str = BRONZE) -> str | None:
+    """Current watermark for an entity in one layer, or None if that layer has never loaded it."""
     if not table_exists(Layer.META, TABLE):
         return None
     row = (
         read_table(Layer.META, TABLE)
-        .filter(F.col("entity") == entity)
+        .filter((F.col("entity") == entity) & (F.col("layer") == layer))
         .select("watermark_value")
         .first()
     )
@@ -53,7 +67,7 @@ MERGE_ATTEMPTS = 5
 MERGE_BACKOFF_SEC = 0.4
 
 
-def set(entity: str, value: str, batch_id: str) -> None:  # noqa: A001 - mirrors get/set pairing
+def set(entity: str, value: str, batch_id: str, layer: str = BRONZE) -> None:  # noqa: A001 - mirrors get/set pairing
     """Advance the watermark. Call only after the corresponding write has committed.
 
     Concurrency, which this table gets more of than its seven rows suggest: every entity in a wave
@@ -74,9 +88,12 @@ def set(entity: str, value: str, batch_id: str) -> None:  # noqa: A001 - mirrors
     """
     spark = get_spark()
     updates = spark.createDataFrame(
-        [(entity, value, batch_id)], "entity string, watermark_value string, last_batch_id string"
+        [(entity, layer, value, batch_id)],
+        "entity string, layer string, watermark_value string, last_batch_id string",
     ).withColumn("updated_ts", F.current_timestamp())
-    condition = f"t.entity = s.entity AND t.entity = '{entity}'"
+    condition = (
+        f"t.entity = s.entity AND t.layer = s.layer AND t.entity = '{entity}'"
+    )
 
     for attempt in range(1, MERGE_ATTEMPTS + 1):
         try:
@@ -96,18 +113,27 @@ def set(entity: str, value: str, batch_id: str) -> None:  # noqa: A001 - mirrors
             log.warning("watermark merge for %s hit %s (attempt %s/%s) — retrying in %.1fs",
                         entity, type(exc).__name__, attempt, MERGE_ATTEMPTS, wait)
             time.sleep(wait)
-    log.info("watermark %s -> %s (batch %s)", entity, value, batch_id)
+    log.info("watermark %s/%s -> %s (batch %s)", layer, entity, value, batch_id)
 
 
-def reset(entity: str | None = None) -> None:
+def reset(entity: str | None = None, layer: str | None = None) -> None:
     """Clear watermarks so the next run performs a full reload.
 
     Deliberately explicit and deliberately loud: an accidental watermark reset on a high-volume
     feed is an expensive mistake, and it is the kind that looks like success.
+
+    Omitting `layer` clears every layer's position for the entity, which is the right default for a
+    reset: resetting bronze without resetting silver would leave silver refusing to re-read rows
+    bronze is about to re-ingest.
     """
     if not table_exists(Layer.META, TABLE):
         return
-    predicate = "true" if entity is None else f"entity = '{entity}'"
-    log.warning("resetting watermark for %s — the next run will reload from the beginning",
-                entity or "ALL ENTITIES")
+    clauses = []
+    if entity is not None:
+        clauses.append(f"entity = '{entity}'")
+    if layer is not None:
+        clauses.append(f"layer = '{layer}'")
+    predicate = " AND ".join(clauses) if clauses else "true"
+    log.warning("resetting watermark for %s (%s) — the next run will reload from the beginning",
+                entity or "ALL ENTITIES", layer or "all layers")
     delta_table(Layer.META, TABLE).delete(predicate)

@@ -29,7 +29,7 @@ TABLE = "meta_run_log"
 SCHEMA = (
     "run_id string, batch_id string, entity string, layer string, step string, status string, "
     "started_ts timestamp, ended_ts timestamp, duration_sec int, rows_read long, "
-    "rows_written long, rows_quarantined long, error_message string"
+    "rows_written long, rows_quarantined long, rows_deduped long, error_message string"
 )
 
 
@@ -40,6 +40,12 @@ class StepMetrics:
     rows_read: int | None = None
     rows_written: int | None = None
     rows_quarantined: int | None = None
+    # Rows dropped as duplicates. A separate count from `rows_quarantined` because the two are
+    # different events with different follow-ups: a quarantined row is a defect somebody should look
+    # at, a deduplicated row is the pipeline working. Both are needed, because the reconciliation
+    # `bronze = silver + quarantined + deduped` is only an assertion if every term is recorded —
+    # derive one of them from the other two and the query can no longer disagree with the pipeline.
+    rows_deduped: int | None = None
     notes: dict[str, str] = field(default_factory=dict)
 
 
@@ -60,7 +66,7 @@ def _write(run_id, batch_id, entity, layer, step, status, started, ended,
         datetime.fromtimestamp(started, tz=timezone.utc),
         datetime.fromtimestamp(ended, tz=timezone.utc),
         int(round(ended - started)),
-        metrics.rows_read, metrics.rows_written, metrics.rows_quarantined,
+        metrics.rows_read, metrics.rows_written, metrics.rows_quarantined, metrics.rows_deduped,
         error,
     )]
     write_table(spark.createDataFrame(row, SCHEMA), Layer.META, TABLE, mode="append")
@@ -87,9 +93,9 @@ def step(run_id: str, batch_id: str, entity: str, layer, step: str):
         raise
     _write(run_id, batch_id, entity, layer, step, "succeeded",
            started, time.time(), metrics, None)
-    log.info("step ok      %s/%s/%s  read=%s written=%s quarantined=%s (%.1fs)",
+    log.info("step ok      %s/%s/%s  read=%s written=%s quarantined=%s deduped=%s (%.1fs)",
              entity, _layer_name(layer), step, metrics.rows_read, metrics.rows_written,
-             metrics.rows_quarantined, time.time() - started)
+             metrics.rows_quarantined, metrics.rows_deduped, time.time() - started)
 
 
 def skipped(run_id: str, batch_id: str, entity: str, layer, step_name: str, reason: str) -> None:
