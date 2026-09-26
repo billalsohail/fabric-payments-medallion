@@ -59,6 +59,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -77,6 +78,14 @@ from sqlglot.tokens import Token, TokenType  # noqa: E402
 # --------------------------------------------------------------------------------------
 
 SOURCES = {
+    # Not a Learn page: FB019 reports a shortcoming of *this file* rather than of the SQL. Giving it
+    # a citation slot anyway keeps `Finding.render` total — the alternative was a special case in
+    # the renderer, and a renderer with a special case for one rule is a renderer that will grow
+    # another.
+    "linter": (
+        "this file — sqlglot could not parse the statement; the AST pass was skipped for it",
+        "n/a",
+    ),
     "surface-area": (
         "https://learn.microsoft.com/fabric/data-warehouse/tsql-surface-area",
         "ms.date 2026-08-26",
@@ -494,6 +503,26 @@ def _split_column_list(tokens: list[Token]) -> tuple[list[_Column], list[Token]]
     return columns, constraint_heads
 
 
+def _multi_column_stats(stmt: Statement, path: str) -> list[Finding]:
+    """`CREATE STATISTICS ... ON t (a, b)` — the surface-area page lists manually created
+    multi-column stats as unsupported. Single-column stats are fine and are in fact how you give
+    the Warehouse optimiser what it needs, so the column count is the whole rule.
+    """
+    out: list[Finding] = []
+    for i, word in enumerate(stmt.words):
+        if word != "statistics" or not stmt.phrase_at(i - 1, ("create", "statistics")):
+            continue
+        after = next((t for t in stmt.tokens[stmt.tokens.index(stmt.anchor[i]):]
+                      if t.token_type == TokenType.L_PAREN), None)
+        if after is not None and _count_paren_group(after, stmt.tokens) > 1:
+            out.append(stmt.finding(
+                i, "FB018", ERROR,
+                "manually created multi-column statistics are not supported; create one "
+                "single-column statistics object per column instead",
+                "surface-area", path))
+    return out
+
+
 def _create_table_rules(stmt: Statement, path: str) -> list[Finding]:
     words = stmt.words
     if len(words) < 3 or words[0] != "create" or "table" not in words[:4]:
@@ -659,6 +688,25 @@ def _count_paren_group(after: Token, tokens: list[Token]) -> int:
 # AST rules — only where structure beats tokens
 # --------------------------------------------------------------------------------------
 
+# `MASKED WITH (FUNCTION = '...')` is valid Fabric T-SQL — it is how dynamic data masking is
+# declared, and declaring it inline is the only non-preview way to do it (ALTER COLUMN is preview).
+# sqlglot cannot parse it: it raises `Expecting )` on the column definition. Since the AST pass
+# skips any statement that fails to parse, leaving this alone meant every AST rule was silently
+# disabled on `dim_customer` — the one table in the warehouse holding PII, and so the last one
+# that should have reduced coverage. Masks are stripped for the *AST pass only*; the token pass
+# reads the original text, which is why the column-type and DEFAULT rules kept working throughout.
+_MASK_CLAUSE = re.compile(
+    r"\s+MASKED\s+WITH\s*\(\s*FUNCTION\s*=\s*'(?:[^']|'')*'\s*\)", re.IGNORECASE
+)
+
+# `CREATE SCHEMA` crashes sqlglot's TSQL dialect outright (an `AttributeError` inside
+# `_parse_create`, not a `ParseError`). No AST rule in this file has anything to say about a
+# `CREATE SCHEMA` anyway, so it is skipped deliberately and by name. The alternative — letting it
+# fall into the generic unparseable branch below — would emit a warning on every deployment script
+# that creates a schema, which trains the reader to ignore that warning.
+_AST_EXEMPT = re.compile(r"^\s*CREATE\s+SCHEMA\b", re.IGNORECASE)
+
+
 def _ast_rules(sql: str, path: str) -> list[Finding]:
     """Parse statement-by-statement, so one exotic statement cannot blind the whole pass.
 
@@ -666,12 +714,26 @@ def _ast_rules(sql: str, path: str) -> list[Finding]:
     constructs this linter rejects (`WITH (DISTRIBUTION = ...)`, `FOR XML`) are exactly that. Parsing
     the file as one unit therefore returned nothing at all for files that contained any violation,
     which silently disabled every AST rule on precisely the files that needed them.
+
+    A statement that still fails to parse is **reported** (FB019) rather than skipped in silence.
+    That is the difference between "the AST rules found nothing here" and "the AST rules never ran
+    here", and conflating the two is how a linter comes to certify code it never inspected — which
+    matters more than usual in this repo, where the linter is the *only* verification the warehouse
+    SQL gets (see docs/gold-execution.md).
     """
     out: list[Finding] = []
     for text, line in _sql_statements(sql):
+        if _AST_EXEMPT.match(text):
+            continue
         try:
-            tree = sqlglot.parse_one(text, dialect="tsql")
-        except Exception:
+            tree = sqlglot.parse_one(_MASK_CLAUSE.sub("", text), dialect="tsql")
+        except Exception as exc:
+            out.append(Finding(
+                path, line, 1, "FB019", WARN,
+                f"statement could not be parsed, so no AST rule was applied to it "
+                f"({type(exc).__name__}: {str(exc).splitlines()[0][:80]}); "
+                "token-based rules still ran",
+                "linter"))
             continue
         if tree is None:
             continue
@@ -689,6 +751,20 @@ def _ast_rules(sql: str, path: str) -> list[Finding]:
                         f"CTE {alias!r} references itself; recursive queries are not supported — "
                         "build the sequence from a cross-joined tally instead",
                         "surface-area"))
+        for with_node in tree.find_all(exp.With):
+            # Sequential CTEs (`WITH a AS (...), b AS (SELECT FROM a)`) are GA. A CTE whose *body*
+            # declares its own `WITH` is a *nested* CTE, which the surface-area page calls a preview
+            # feature. Preview is not unsupported, so this is a warning, not an error — but a gold
+            # layer that depends on a preview feature is a gold layer that can regress without a
+            # code change, which is worth knowing before deployment rather than after.
+            for cte in with_node.expressions:
+                if any(inner is not with_node for inner in cte.this.find_all(exp.With)):
+                    out.append(Finding(
+                        path, line, 1, "FB017", WARN,
+                        f"CTE {cte.alias_or_name!r} contains a nested CTE, which is a preview "
+                        "feature; flatten it into a sequential CTE chain instead",
+                        "surface-area"))
+
         for create in tree.find_all(exp.Create):
             props = create.args.get("properties")
             if props and any(isinstance(p, exp.MaterializedProperty) for p in props.expressions):
@@ -698,16 +774,52 @@ def _ast_rules(sql: str, path: str) -> list[Finding]:
     return out
 
 
+def _blank_line_comments(sql: str) -> str:
+    """Replace the body of every `--` comment with spaces, preserving line and column positions.
+
+    This must happen before the `;` split, and the reason is a bug FB019 exposed rather than one
+    that was foreseen. The DDL in this repo is more prose than SQL, and English prose contains
+    semicolons — so a naive split shredded every commented file into fragments like
+    "...only in `04_constraints.sql`" and handed them to sqlglot, which quite reasonably failed on
+    all of them. The AST pass was therefore running on almost none of the warehouse DDL while
+    reporting a clean bill of health, which is the single worst thing a linter can do.
+
+    Columns are preserved rather than the comment simply being dropped, because every `Finding`
+    carries a position a reader is expected to be able to jump to.
+
+    A `--` inside a string literal is left alone by tracking quote parity along the line. That is
+    not a full lexer, and it does not need to be: the token pass already segments on real
+    `SEMICOLON` tokens from sqlglot's own tokenizer, so this function's only job is to stop prose
+    from masquerading as SQL.
+    """
+    out: list[str] = []
+    for line in sql.splitlines():
+        in_string = False
+        cut = None
+        i = 0
+        while i < len(line):
+            ch = line[i]
+            if ch == "'":
+                in_string = not in_string
+            elif ch == "-" and not in_string and line[i:i + 2] == "--":
+                cut = i
+                break
+            i += 1
+        out.append(line if cut is None else line[:cut] + " " * (len(line) - cut))
+    return "\n".join(out)
+
+
 def _sql_statements(sql: str) -> list[tuple[str, int]]:
-    """Naive `;` split, each fragment paired with the line its first non-blank character is on.
+    """Comment-stripped `;` split, each fragment paired with the line its first non-blank character
+    is on.
 
     Good enough for the AST pass, which cares about query shape: a `;` inside a string literal would
-    at worst yield two fragments that fail to parse and are skipped. The token pass, which does the
-    precise work, segments on real `SEMICOLON` tokens instead.
+    at worst yield two fragments that fail to parse and are reported as FB019. The token pass, which
+    does the precise work, segments on real `SEMICOLON` tokens instead.
     """
     out: list[tuple[str, int]] = []
     line = 1
-    for chunk in sql.split(";"):
+    for chunk in _blank_line_comments(sql).split(";"):
         if chunk.strip():
             blank = len(chunk) - len(chunk.lstrip("\n\r \t"))
             out.append((chunk, line + chunk[:blank].count("\n")))
@@ -725,6 +837,7 @@ TOKEN_RULES = (
     _identifier_limits,
     _constraint_enforcement,
     _create_table_rules,
+    _multi_column_stats,
 )
 
 

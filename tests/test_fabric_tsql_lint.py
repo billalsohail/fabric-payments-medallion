@@ -41,6 +41,18 @@ VIOLATIONS: list[tuple[str, str]] = [
     ("FB014", "EXEC sp_showspaceused 'dbo.t';"),
     ("FB015", "WITH r AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM r WHERE n < 5) SELECT n FROM r;"),
     ("FB016", "CREATE TABLE ##shared (id bigint);"),
+    # Preview, not unsupported — so this one is the only WARN in the table, and
+    # `test_each_rule_fires` deliberately asserts on the rule code rather than the severity.
+    ("FB017", "WITH a AS (WITH b AS (SELECT 1 AS x) SELECT x FROM b) SELECT x FROM a;"),
+    ("FB018", "CREATE STATISTICS s ON dbo.t (a, b);"),
+    # FB019 is the linter reporting on itself: a statement sqlglot could not parse got no AST rules.
+    # `THROW` is the honest fixture because it is valid, supported Fabric T-SQL that sqlglot raises
+    # a ParseError on — and it appears for real in every stored procedure's error handling. The
+    # point is not that the SQL is wrong; it is that the linter must say it did not check rather
+    # than imply it did. This is the rule that revealed the AST pass was blind on most of
+    # src/warehouse/ddl/, because prose comments contain semicolons and the splitter used to shred
+    # commented files into fragments.
+    ("FB019", "THROW 51000, 'batch not found', 1;"),
     # Table definition
     ("FB101", "CREATE TABLE dbo.t (id bigint) WITH (DISTRIBUTION = HASH(id));"),
     ("FB101", "CREATE TABLE dbo.t (id bigint) WITH (CLUSTERED COLUMNSTORE INDEX);"),
