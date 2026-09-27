@@ -41,147 +41,60 @@ assertion below, which is worse than a red test.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 import pytest
 import sqlglot
-from sqlglot import exp
 
-DDL_DIR = Path(__file__).resolve().parents[1] / "src" / "warehouse" / "ddl"
-
-# Facts and the aggregate. Kept as an explicit list rather than a `startswith("fact_")` test so
-# that adding a fact table is a deliberate decision about which invariants apply to it.
-FACT_TABLES = {"dbo.fact_transaction", "dbo.fact_dispute", "dbo.agg_merchant_daily"}
+# The parse itself lives in `tests/ddl_parse.py`. It moved there when `tests/test_semantic_model.py`
+# needed the same column lists and the same foreign keys in order to check the TMDL against the
+# warehouse. Two copies of a parser drift, and drift between a check and the thing it checks is the
+# failure this repo has already paid for five times over in the form of stale cross-references.
+# The reasoning about *how* the DDL is parsed stays in the module docstring above, because it is
+# load-bearing for the assertions below rather than for the parse in the abstract.
+from tests.ddl_parse import (
+    DDL_DIR,
+    FACT_TABLES,
+    STATS_RE,
+    cols,
+    is_nullable,
+    parse_foreign_keys,
+    parse_keys,
+    parse_tables,
+    qualify,
+    read_ddl,
+    statements,
+    strip_comments,
+)
 
 
 # --------------------------------------------------------------------------------------
-# Parsing
+# Fixtures
 # --------------------------------------------------------------------------------------
-
-def _strip_comments(sql: str) -> str:
-    """Remove `--` comments. Needed before splitting on `;`, and before matching constraint
-    syntax — this repo's DDL carries more prose than SQL, and several comments contain the word
-    `CONSTRAINT` while describing one.
-    """
-    return "\n".join(line.split("--", 1)[0] for line in sql.splitlines())
-
-
-def _statements(sql: str) -> list[str]:
-    return [s.strip() for s in _strip_comments(sql).split(";") if s.strip()]
-
-
-def _qualify(name: str) -> str:
-    """`dbo.t` unchanged; bare `t` assumed to be in `dbo`, matching T-SQL's default schema."""
-    name = name.replace("[", "").replace("]", "").lower()
-    return name if "." in name else f"dbo.{name}"
-
-
-def _is_nullable(col: exp.ColumnDef) -> bool:
-    """Whether a parsed column accepts NULL.
-
-    The `allow_null` check is the whole point. sqlglot represents an **explicit** ``NULL`` as
-    ``NotNullColumnConstraint(allow_null=True)`` — the same node as ``NOT NULL``, differing only in
-    that argument. An earlier version of this file tested only the node type, and so read every
-    column in the DDL as NOT NULL. Every nullability assertion below asserts that something is *not*
-    nullable, which meant all of them passed unconditionally and none of them could ever have caught
-    the thing they exist to catch.
-
-    It was found by `src/lib/gold.py` creating the staging tables from this same parse and failing on
-    a NOT NULL violation for a column the DDL declares ``NULL``. Worth recording as the pattern it
-    is: a static check that agreed with itself for months, corrected the moment something executed
-    against it.
-    """
-    return not any(
-        isinstance(c.kind, exp.NotNullColumnConstraint) and not c.kind.args.get("allow_null")
-        for c in col.constraints
-    )
-
+# Module-scoped, so the DDL is read and parsed once for the file rather than once per test. The
+# parse is fast, but it is also pure — nothing below mutates what it returns — so re-running it per
+# test would buy nothing at all.
 
 @pytest.fixture(scope="module")
 def ddl() -> str:
-    files = sorted(DDL_DIR.glob("*.sql"))
-    assert files, f"no DDL found under {DDL_DIR}"
-    return "\n".join(f.read_text() for f in files)
-
-
-_CREATE_TABLE_RE = re.compile(r"^\s*CREATE\s+TABLE\b", re.IGNORECASE)
-_MASK_CLAUSE = re.compile(
-    r"\s+MASKED\s+WITH\s*\(\s*FUNCTION\s*=\s*'(?:[^']|'')*'\s*\)", re.IGNORECASE
-)
+    return read_ddl(DDL_DIR)
 
 
 @pytest.fixture(scope="module")
 def tables(ddl: str) -> dict[str, dict[str, bool]]:
-    """`{qualified table: {column: is_nullable}}`, from every CREATE TABLE in the DDL.
-
-    Parsed one statement at a time and filtered to ``CREATE TABLE`` first — see the module
-    docstring for why a whole-file ``sqlglot.parse`` does not survive this DDL.
-    """
-    out: dict[str, dict[str, bool]] = {}
-    for stmt in _statements(ddl):
-        if not _CREATE_TABLE_RE.match(stmt):
-            continue
-        try:
-            tree = sqlglot.parse_one(_MASK_CLAUSE.sub("", stmt), dialect="tsql")
-        except Exception as exc:  # noqa: BLE001 — re-raised immediately with context
-            raise AssertionError(
-                f"a CREATE TABLE statement could not be parsed, so it would have been exempt "
-                f"from every check in this file ({type(exc).__name__}: {exc}):\n{stmt[:400]}"
-            ) from exc
-        if not isinstance(tree, exp.Create) or (tree.kind or "").upper() != "TABLE":
-            continue
-        schema = tree.this
-        name = _qualify(schema.this.sql(dialect="tsql"))
-        cols: dict[str, bool] = {}
-        for col in schema.expressions:
-            if not isinstance(col, exp.ColumnDef):
-                continue
-            cols[col.name.lower()] = _is_nullable(col)
-        out[name] = cols
-    return out
-
-
-# `ALTER TABLE <t> ADD CONSTRAINT <n> PRIMARY KEY|UNIQUE ... (<cols>) NOT ENFORCED`
-_KEY_RE = re.compile(
-    r"ALTER\s+TABLE\s+(?P<table>[\w\[\]\.]+)\s+ADD\s+CONSTRAINT\s+(?P<name>\w+)\s+"
-    r"(?P<kind>PRIMARY\s+KEY|UNIQUE)\b[^(]*\((?P<cols>[^)]*)\)",
-    re.IGNORECASE | re.DOTALL,
-)
-# `... FOREIGN KEY (<cols>) REFERENCES <t2> (<cols2>) NOT ENFORCED`
-_FK_RE = re.compile(
-    r"ALTER\s+TABLE\s+(?P<table>[\w\[\]\.]+)\s+ADD\s+CONSTRAINT\s+(?P<name>\w+)\s+"
-    r"FOREIGN\s+KEY\s*\((?P<cols>[^)]*)\)\s*REFERENCES\s+(?P<ref_table>[\w\[\]\.]+)\s*"
-    r"\((?P<ref_cols>[^)]*)\)",
-    re.IGNORECASE | re.DOTALL,
-)
-_STATS_RE = re.compile(
-    r"CREATE\s+STATISTICS\s+(?P<name>\w+)\s+ON\s+(?P<table>[\w\[\]\.]+)\s*\((?P<cols>[^)]*)\)",
-    re.IGNORECASE | re.DOTALL,
-)
-
-
-def _cols(raw: str) -> list[str]:
-    return [c.strip().replace("[", "").replace("]", "").lower() for c in raw.split(",") if c.strip()]
+    """`{qualified table: {column: is_nullable}}`, from every CREATE TABLE in the DDL."""
+    return parse_tables(ddl)
 
 
 @pytest.fixture(scope="module")
 def keys(ddl: str) -> list[dict]:
-    return [
-        {"table": _qualify(m["table"]), "name": m["name"], "cols": _cols(m["cols"]),
-         "kind": " ".join(m["kind"].upper().split())}
-        for stmt in _statements(ddl)
-        for m in [_KEY_RE.search(stmt)] if m
-    ]
+    """Every PRIMARY KEY and UNIQUE constraint, as `{table, name, cols, kind}`."""
+    return parse_keys(ddl)
 
 
 @pytest.fixture(scope="module")
 def foreign_keys(ddl: str) -> list[dict]:
-    return [
-        {"table": _qualify(m["table"]), "name": m["name"], "cols": _cols(m["cols"]),
-         "ref_table": _qualify(m["ref_table"]), "ref_cols": _cols(m["ref_cols"])}
-        for stmt in _statements(ddl)
-        for m in [_FK_RE.search(stmt)] if m
-    ]
+    """Every FOREIGN KEY, as `{table, name, cols, ref_table, ref_cols}`."""
+    return parse_foreign_keys(ddl)
 
 
 # --------------------------------------------------------------------------------------
@@ -210,7 +123,7 @@ def test_every_add_constraint_statement_was_recognised(ddl, keys, foreign_keys):
     invisible exemption from every check in this file.
     """
     total = sum(
-        1 for stmt in _statements(ddl) if re.search(r"ADD\s+CONSTRAINT", stmt, re.IGNORECASE)
+        1 for stmt in statements(ddl) if re.search(r"ADD\s+CONSTRAINT", stmt, re.IGNORECASE)
     )
     assert total == len(keys) + len(foreign_keys), (
         f"{total} ADD CONSTRAINT statements but only {len(keys) + len(foreign_keys)} parsed"
@@ -244,14 +157,14 @@ def test_foreign_keys_reference_columns_that_exist(tables, foreign_keys):
 
 def test_statistics_reference_columns_that_exist(tables, ddl):
     found = 0
-    for stmt in _statements(ddl):
-        m = _STATS_RE.search(stmt)
+    for stmt in statements(ddl):
+        m = STATS_RE.search(stmt)
         if not m:
             continue
         found += 1
-        table = _qualify(m["table"])
+        table = qualify(m["table"])
         assert table in tables, f"{m['name']}: unknown table {table}"
-        for col in _cols(m["cols"]):
+        for col in cols(m["cols"]):
             assert col in tables[table], f"{m['name']}: {table} has no column {col!r}"
     assert found >= 4, "statistics statements were not parsed"
 
@@ -349,11 +262,11 @@ def test_security_predicate_columns_exist_on_every_filtered_table(tables, ddl):
     """
     predicates = re.findall(
         r"ADD\s+FILTER\s+PREDICATE\s+[\w\.]+\s*\(\s*(?P<col>\w+)\s*\)\s*ON\s+(?P<table>[\w\[\]\.]+)",
-        _strip_comments(ddl), re.IGNORECASE,
+        strip_comments(ddl), re.IGNORECASE,
     )
     assert len(predicates) >= 3, predicates
     for col, table in predicates:
-        table = _qualify(table)
+        table = qualify(table)
         assert table in tables, f"filter predicate on unknown table {table}"
         assert col.lower() in tables[table], f"{table} has no column {col!r} to filter on"
         assert not tables[table][col.lower()], (
@@ -367,7 +280,7 @@ def test_security_predicate_columns_exist_on_every_filtered_table(tables, ddl):
 # --------------------------------------------------------------------------------------
 
 def test_explicit_null_is_distinguished_from_not_null():
-    """Pins the sqlglot quirk described in `_is_nullable`.
+    """Pins the sqlglot quirk described in `is_nullable`.
 
     This is a test about a library's AST rather than about the repo's SQL, which normally would not
     earn a place here. It earns one because getting it wrong is silent in exactly one direction: it
@@ -378,7 +291,7 @@ def test_explicit_null_is_distinguished_from_not_null():
     tree = sqlglot.parse_one(
         "CREATE TABLE t (a int NULL, b int NOT NULL, c int)", dialect="tsql"
     )
-    parsed = {col.name: _is_nullable(col) for col in tree.this.expressions}
+    parsed = {col.name: is_nullable(col) for col in tree.this.expressions}
     assert parsed == {"a": True, "b": False, "c": True}
 
 
