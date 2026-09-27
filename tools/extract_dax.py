@@ -10,7 +10,7 @@ behind.
 So why have the derived copy at all?
 
   1. **There is nowhere else to read the model's semantics in one sitting.** The 36 measures are
-     spread across six table files and interleaved with ~90 column declarations, partition blocks
+     spread across six table files and interleaved with 152 column declarations, partition blocks
      and annotations. A reviewer who wants to know what this model *means* should not have to
      assemble that by hand.
   2. **It is a runnable DAX query.** The generated `EVALUATE` returns every measure at the grand
@@ -180,9 +180,9 @@ def render(model: tmdl.Model) -> str:
         _rule("to find a measure that does not resolve — the error names it. Nothing in this repo"),
         _rule("has executed it; see semantic-model/README.md."),
         _rule(" "),
-        _rule("Each measure carries the first paragraph of its TMDL documentation and its format"),
-        _rule("string and display folder, as comments. The full reasoning stays in the TMDL beside"),
-        _rule("the measure, which is the file to read and the only file to edit."),
+        _rule("Each measure carries the first paragraph of its TMDL documentation, plus its"),
+        _rule("format string and display folder as comments. The full reasoning stays in the"),
+        _rule("TMDL beside the measure, which is the file to read and the only file to edit."),
         _rule(),
         "",
         "DEFINE",

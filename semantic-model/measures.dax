@@ -11,9 +11,9 @@
 // to find a measure that does not resolve — the error names it. Nothing in this repo
 // has executed it; see semantic-model/README.md.
 //
-// Each measure carries the first paragraph of its TMDL documentation and its format
-// string and display folder, as comments. The full reasoning stays in the TMDL beside
-// the measure, which is the file to read and the only file to edit.
+// Each measure carries the first paragraph of its TMDL documentation, plus its
+// format string and display folder as comments. The full reasoning stays in the
+// TMDL beside the measure, which is the file to read and the only file to edit.
 // =============================================================================================
 
 DEFINE
