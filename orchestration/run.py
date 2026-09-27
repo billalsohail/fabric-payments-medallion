@@ -10,7 +10,7 @@ This is a deliberate 1:1 mirror of the Data Factory graph, not a convenience scr
 | `nb_01_bronze_ingest.ingest(entity=...)` | **Notebook** activity, parameterised |
 | `nb_02_silver_transform.transform(entity=...)` | **Notebook** activity, parameterised |
 | retry with backoff | activity `retry` / `retryIntervalInSeconds` |
-| the reconciliation at the end | **Stored procedure** activity (`sp_load_*` on `wh_gold`) |
+| `gold.load()` after the silver stage | a chain of **Stored procedure** activities on `wh_gold` |
 
 Because the mapping is explicit, `docs/fabric-deployment.md` can describe the pipeline JSON by
 pointing at this file rather than by hand-waving.
@@ -22,6 +22,25 @@ That ordering is not cosmetic: `transactions` carries a `referential` DQ rule ag
 `dim_merchant`, so running the fact concurrently with its dimension would quarantine valid rows and
 present as bad source data. Parallelism is available *within* a wave, where the entities genuinely
 do not depend on each other.
+
+## Why gold has its own runner
+
+Bronze and silver are *entity*-shaped: one notebook, parameterised, run once per feed, and the
+parallelism is across feeds. Gold is not. It is ten stored procedures over a fixed dependency
+order — reference data, then `dim_date`, then the dimensions, then the facts that look their keys
+up, then the aggregate that reads the facts — and none of that order is expressible as a priority
+on a source feed, because gold tables are not source feeds. Forcing it through `run_stage` would
+have meant inventing config rows for things no source produces.
+
+So `run_gold_stage` mirrors the Fabric side literally: a chain of Stored procedure activities, run
+in order, stopping at the first failure. One `Outcome` per proc, so a failure names the proc rather
+than the stage.
+
+It also has a different log. Bronze and silver write `meta_run_log` in the metadata lakehouse; the
+procs write `stg.load_log` inside the warehouse, because a stored procedure cannot write to a
+lakehouse table and `TRY...CATCH` is the only thing that can record its own failure. Two logs is
+the honest consequence of gold being a different engine, and `reconcile` reads whichever one
+applies rather than pretending there is one.
 
 ## Failure policy
 
@@ -47,7 +66,10 @@ from src.runtime.context import Layer, get_spark, read_table, table_exists
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("pl_master")
 
-STAGES = ("bronze", "silver")
+STAGES = ("bronze", "silver", "gold")
+# Stages whose steps are recorded in meta_run_log. Gold writes stg.load_log instead;
+# see `reconcile`.
+RUN_LOG_STAGES = frozenset({"bronze", "silver"})
 
 
 @dataclass
@@ -162,6 +184,86 @@ def run_stage(stage: str, plan: list[dict], parallelism: int, attempts: int,
     return outcomes
 
 
+def gold_batch_id(run_id: str) -> str:
+    return f"gold|{run_id}"
+
+
+def run_gold_stage(attempts: int, backoff_sec: float) -> list[Outcome]:
+    """The Stored procedure chain. One Outcome per proc, in dependency order.
+
+    Retry wraps the whole load rather than an individual proc, and that is the same argument as in
+    `_run_with_retry`: every proc is idempotent, so replaying the chain from the start is safe, and
+    resuming from the middle would need to know that the earlier ones really did commit. `gold.load`
+    already stops at the first failure, so a retry re-runs the successful prefix cheaply — a MERGE
+    that changes nothing is the cheap case — and then reaches the proc that failed.
+    """
+    from src.lib import gold  # noqa: PLC0415 — importing gold builds nothing until load() is called
+
+    # The gold batch id is derived from the run id rather than from the clock, so that the two
+    # logs can be joined: `meta_run_log.run_id` and `stg.load_log.load_batch_id` name the same run.
+    # Gold's id does not have to be deterministic the way bronze's does — see `gold.load` — but
+    # making it traceable costs nothing, and "which warehouse load came from which pipeline run" is
+    # the first question anyone asks of a failed load.
+    batch = gold_batch_id(RUN_ID)
+    last: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            results = gold.load(load_batch_id=batch)
+            break
+        except Exception as exc:  # noqa: BLE001 — reported as an Outcome, like every other stage
+            last = exc
+            if attempt < attempts:
+                wait = backoff_sec * attempt
+                log.warning("gold attempt %s/%s failed (%s) — retrying in %.0fs",
+                            attempt, attempts, exc, wait)
+                time.sleep(wait)
+    else:
+        return [Outcome("gold.load", "gold", "failed", detail=f"{type(last).__name__}: {last}")]
+
+    outcomes = []
+    for r in results:
+        outcomes.append(Outcome(
+            entity=_proc_log_name(r),
+            stage="gold",
+            status="failed" if r.error else "succeeded",
+            rows=_rows_written(r),
+            detail=r.error or f"{r.executed} stmt(s), {r.seconds:.1f}s",
+        ))
+    return outcomes
+
+
+def _proc_log_name(result) -> str:
+    """The name the proc calls itself in `stg.load_log`, taken from the proc rather than guessed.
+
+    The file is `03_sp_load_dim_account.sql` and the log row says `sp_load_dim_account`, so matching
+    them means dropping the ordering prefix. Reading `@proc_name` out of the interpreted DECLARE is
+    exact; stripping the prefix is a guess about a filename convention, and it is the fallback only
+    because a proc that failed before its DECLARE still needs a name to be reported under.
+    """
+    name = result.variables.get("proc_name")
+    if isinstance(name, str) and name:
+        return name
+    stem = result.proc
+    return stem.split("_", 1)[1] if stem[:2].isdigit() and "_" in stem else stem
+
+
+def _rows_written(result) -> int:
+    """Rows the proc changed: inserted plus updated, or rows read if it reports neither.
+
+    Not the sum of every `rows_*` variable. The procs track `rows_read`, `rows_inserted`,
+    `rows_updated` and `rows_deleted` separately, and adding them together double-counts every row
+    that was read and then written — which is most of them, and which is why the first run of this
+    reported exactly twice the dimension's size.
+    """
+    v = result.variables
+    written = sum(
+        int(v[k]) for k in ("rows_inserted", "rows_updated") if isinstance(v.get(k), int)
+    )
+    if written:
+        return written
+    return int(v["rows_read"]) if isinstance(v.get("rows_read"), int) else 0
+
+
 def reconcile(run_id: str, dispatched: list[Outcome]) -> list[Outcome]:
     """Cross-check the log against what was dispatched.
 
@@ -178,14 +280,47 @@ def reconcile(run_id: str, dispatched: list[Outcome]) -> list[Outcome]:
         .select("entity", "layer")
         .collect()
     }
+    gold_logged = _gold_log_names(dispatched, gold_batch_id(run_id))
+
     out = []
     for o in dispatched:
-        if o.status != "failed" and (o.entity, o.stage) not in logged:
-            out.append(Outcome(o.entity, o.stage, "unknown", o.rows,
-                               "dispatched but absent from meta_run_log"))
-        else:
+        if o.status == "failed":
             out.append(o)
+            continue
+        if o.stage in RUN_LOG_STAGES:
+            missing = (o.entity, o.stage) not in logged
+            where = "meta_run_log"
+        else:
+            missing = o.entity not in gold_logged
+            where = "stg.load_log"
+        out.append(
+            Outcome(o.entity, o.stage, "unknown", o.rows, f"dispatched but absent from {where}")
+            if missing else o
+        )
     return out
+
+
+def _gold_log_names(dispatched: list[Outcome], batch: str) -> set[str]:
+    """Procs that `stg.load_log` records as SUCCEEDED *for this run*. Empty if gold did not run.
+
+    Scoped to the batch, which is the whole reason the batch id is derived from the run id. The log
+    is append-only across runs and a proc only rewrites its own row for its own batch, so an
+    unscoped read would find yesterday's SUCCEEDED row and report a proc as logged when this run
+    never reached it. That is precisely the false negative this function exists to prevent.
+
+    Read through Spark rather than through `gold.load_log()` so that a gold stage which failed
+    before the warehouse existed reports `unknown` instead of raising out of the reporting path.
+    """
+    if not any(o.stage == "gold" for o in dispatched):
+        return set()
+    spark = get_spark()
+    if not spark.catalog.tableExists("stg.load_log"):
+        return set()
+    rows = spark.sql(
+        "SELECT proc_name FROM stg.load_log "
+        f"WHERE status = 'SUCCEEDED' AND load_batch_id = '{batch}'"
+    ).collect()
+    return {r["proc_name"] for r in rows}
 
 
 def report(outcomes: list[Outcome]) -> int:
@@ -206,7 +341,7 @@ def main(argv: list[str] | None = None) -> int:
     global RUN_ID  # noqa: PLW0603 — one run id per process, read by the stage closures
 
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--stages", default="bronze,silver",
+    ap.add_argument("--stages", default="bronze,silver,gold",
                     help="comma-separated subset of: " + ",".join(STAGES))
     ap.add_argument("--entities", default="",
                     help="comma-separated subset of entities; default is every enabled feed")
@@ -236,8 +371,11 @@ def main(argv: list[str] | None = None) -> int:
 
     outcomes: list[Outcome] = []
     for stage in stages:
-        stage_outcomes = run_stage(stage, plan, args.parallelism, args.attempts,
-                                   args.backoff_sec, args.until_date, args.force_reload)
+        if stage == "gold":
+            stage_outcomes = run_gold_stage(args.attempts, args.backoff_sec)
+        else:
+            stage_outcomes = run_stage(stage, plan, args.parallelism, args.attempts,
+                                       args.backoff_sec, args.until_date, args.force_reload)
         outcomes.extend(stage_outcomes)
         if any(o.status == "failed" for o in stage_outcomes):
             log.error("stage %s failed — later stages not attempted", stage)
