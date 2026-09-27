@@ -5,10 +5,12 @@ land as files, are ingested append-only into bronze, conformed and quality-gated
 SCD2 history, and served from a gold star schema. The transformation code is written as Microsoft
 Fabric notebook code; it runs on a laptop.
 
+[![ci](https://github.com/billalsohail/fabric-payments-medallion/actions/workflows/ci.yml/badge.svg)](https://github.com/billalsohail/fabric-payments-medallion/actions/workflows/ci.yml)
+
 > ### Status
 >
 > **What runs:** landing → bronze → silver → gold, end-to-end, from a cold start, on PySpark 3.5 /
-> Delta 3.2 — the same pairing as the Fabric Spark runtime. 197 tests pass locally, including
+> Delta 3.2 — the same pairing as the Fabric Spark runtime. 198 tests pass locally, including
 > run-it-twice idempotency, SCD2 interval invariants, a reconciliation that ties every bronze row to
 > a silver row, a quarantined row or a deduplicated one, and a second reconciliation in which every
 > difference between silver and the star schema is enumerated and attributed to a named cause.
@@ -25,9 +27,16 @@ Fabric notebook code; it runs on a laptop.
 > claims, two mechanisms, deliberately never conflated —
 > [`docs/gold-execution.md`](docs/gold-execution.md).
 >
-> **What is written but not yet built:** CI, the semantic model and the `fabric/` deployment
-> artefacts. See [Build state](#8-build-state) — this repo is mid-build and the roadmap is stated
-> rather than implied.
+> **Verified in CI**, not only on my laptop: every push runs the badge above — a cold GitHub runner
+> generates the feeds from a seed, runs all three stages, runs them a second time to prove the rerun
+> is a no-op, then runs the suite, and separately asserts the suite was not *skipped*. That last step
+> is not paranoia: `conftest.py` skips the whole session when landing data is missing, which is right
+> locally and is a trap in CI, where a skipped session is a green tick. A build that proved nothing
+> must not look like a build that passed.
+>
+> **What is written but not yet built:** the semantic model and the `fabric/` deployment artefacts.
+> See [Build state](#8-build-state) — this repo is mid-build and the roadmap is stated rather than
+> implied.
 >
 > **What has never touched Microsoft Fabric:** all of it. I could not provision a tenant inside the
 > project window — the Fabric trial requires a work or school account. So nothing here is a claim
@@ -126,7 +135,7 @@ make generate SCALE=tiny    # deterministic landing files under ./_onelake/files
 make seed                   # the metadata control plane: config, DQ rules, watermarks
 make run                    # bronze, silver, gold — driven entirely by meta_source_config
 make run                    # run it again — this is the interesting one
-make test                   # 197 tests
+make test                   # 198 tests
 ```
 
 The second `make run` is the point. It should do almost nothing, and say so:
@@ -313,7 +322,7 @@ rather than emitting a zero-width row that no point-in-time join could ever retu
 
 ## 7. What the tests actually prove
 
-`make test` — 197 tests. The ones that matter:
+`make test` — 198 tests. The ones that matter:
 
 | Claim | Test |
 |---|---|
@@ -322,14 +331,14 @@ rather than emitting a zero-width row that no point-in-time join could ever retu
 | Every bronze row is accounted for downstream | `test_every_bronze_row_is_accounted_for` |
 | A malformed value is quarantined, not cast to null | `test_an_uncastable_value_is_quarantined_rather_than_cast_to_null` |
 | Defects are quarantined, not merely counted | `test_defects_were_actually_quarantined_not_merely_counted` |
-| A DQ failure genuinely fails a run | `test_dq.py` |
+| A DQ failure genuinely fails a run, and does not advance the watermark | `test_an_error_severity_rule_fails_the_run_and_records_why` |
 | A type contract cannot be weakened from config | `test_a_type_contract_cannot_be_smuggled_in_as_a_config_rule` |
 | One `is_current` row per key, no overlaps, no zero-width versions | `test_scd2.py` |
 | A transaction joins to the *then*-current dimension version | `test_a_transaction_joins_to_the_then_current_version` |
 | Two sequential batches equal one combined batch | `test_incremental_load_matches_a_single_load` |
 | A delete-only batch still closes its incumbent | `test_a_delete_only_batch_closes_the_incumbent` |
 | Late-arriving disputes land without duplicating | `test_the_dispute_window_reprocesses_without_duplicating` |
-| The month-10 new column is absorbed, not fatal | `test_schema_evolution` |
+| The month-10 new column is absorbed, not fatal | `test_bronze_absorbs_a_new_source_column_mid_feed` |
 | The generator still matches the published contract | `test_contracts.py` |
 | The same seed produces byte-identical data | `test_determinism.py` |
 | Every unknown-member key in a fact has a named, correct cause | `test_every_unknown_member_has_a_named_cause` |
@@ -386,11 +395,12 @@ Honest, because the alternative is worse. Three days were budgeted; this is the 
 | Silver transform, all seven feeds | **Done**, tested |
 | Gold: star-schema DDL + 10 load procedures | **Done**; logic executed and reconciled, dialect linted, never run by a T-SQL engine ([`docs/gold-execution.md`](docs/gold-execution.md)) |
 | `tools/fabric_tsql_lint.py` — Fabric T-SQL subset linter | **Done**, 70 tests, 41 rules, each citing the Microsoft Learn page and `ms.date` it came from |
-| CI (`.github/workflows/ci.yml`) | Not written — **the status box will say "verified in CI" only once it is** |
+| CI (`.github/workflows/ci.yml`) | **Done and green.** A cold runner generates the feeds, runs all three stages, runs them again, then runs the suite — and asserts the suite was not skipped, because a skipped session is also a green tick |
 | Semantic model (TMDL + DAX), static dashboard | Not written |
 | `fabric/` deployment artefacts + runbook | Not written; will be labelled UNVALIDATED in every file |
 | [`docs/fabric-tsql-subset.md`](docs/fabric-tsql-subset.md) | **Done** — the rules, the Learn pages they came from, the four corrections those pages forced, and what the linter cannot tell you |
-| `docs/architecture.md`, `design-decisions.md`, `databricks-to-fabric.md`, `cost-and-capacity.md` | Not written |
+| [`docs/design-decisions.md`](docs/design-decisions.md) | **Done** — fourteen decisions, the last four made *by* the code rather than before it, each with the cost it carries |
+| `docs/architecture.md`, `databricks-to-fabric.md`, `cost-and-capacity.md` | Not written |
 
 Beyond this build, the honest list of what a production version needs and this does not have:
 live-tenant validation; streaming ingestion (Eventstream → Eventhouse) for authorisations; Purview
@@ -409,6 +419,8 @@ docs/fabric-tsql-subset.md    The Fabric Warehouse T-SQL subset the linter enfor
                               came from, and what a clean lint does not prove.
 docs/gold-execution.md        What executes the gold T-SQL with no tenant, and what that entitles
                               a reader to believe about it. Read before src/warehouse/.
+docs/design-decisions.md      Fourteen decisions and what each one cost. The last four were forced
+                              by the code, and are kept separate for that reason.
 
 src/runtime/context.py        The shim. The keystone: local ↔ Fabric, one code path above it.
 src/runtime/params.py         Fabric notebook parameter-cell resolution.
@@ -434,7 +446,7 @@ src/warehouse/procs/          The ten load procedures. The gold deliverable.
 tools/fabric_tsql_lint.py     The portability gate: 41 Fabric Warehouse subset rules over sqlglot.
 
 orchestration/run.py          Local stand-in for the pl_master Fabric pipeline, all three stages.
-tests/                        197 tests. conftest.py builds an isolated lake per module.
+tests/                        198 tests. conftest.py builds an isolated lake per module.
 ```
 
 If you are reviewing this and have ten minutes, read in this order: the header of

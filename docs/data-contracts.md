@@ -222,17 +222,26 @@ Rates, not absolute counts: the same figure has to hold at `tiny` and at `demo`,
 "defects exist and every one of them is quarantined", never a magic number. The rates live in
 `DEFECTS` in `nb_00_generate_landing_data.py` and this table is the contract they answer to.
 
-| Defect | Rate | Mechanism it proves | Test |
-|---|---|---|---|
-| Exact duplicate transactions | 0.3% | Dedupe on merge keys | `test_dedupe` |
-| Null `merchant_id` on non-ATM | 0.5% | Conditional `not_null` rule | `test_dq_gate` |
-| Negative `amount_minor` | 0.02% | `range` rule → quarantine | `test_dq_gate` |
-| Invalid `currency_code` | 0.015% | `enum_domain` rule → quarantine | `test_dq_gate` |
-| `decline_reason_code` inconsistent with `status` | 0.05% | Cross-field rule (both directions) | `test_dq_gate` |
-| FX rate date gaps | 5 dates, evenly spread | `continuity` rule (batch-level) + forward-fill | `test_fx_gap_fill` |
-| Disputes 0–90 days late | all disputes | Rolling-window reprocessing | `test_late_arriving` |
-| `accounts` CDC `U`/`D` operations | 0–5 changes/account; 2% of changes are `D` | SCD2 close-out, incl. logical delete | `test_scd2_invariants` |
-| `wallet_type` appears at month 10 | one-off | Schema evolution in bronze | `test_schema_evolution` |
+Two tests per defect, and the split matters: one asserts the **generator still injects it** (a
+defect that quietly stopped being generated would make its mechanism test pass vacuously), the other
+asserts the **pipeline handles it**. Neither is sufficient alone.
+
+| Defect | Rate | Mechanism it proves | Still injected | Handled |
+|---|---|---|---|---|
+| Exact duplicate transactions | 0.3% | Dedupe on merge keys | `test_duplicate_transactions_injected_at_contract_rate` | `test_duplicate_transactions_are_removed_and_counted` |
+| Null `merchant_id` on non-ATM | 0.5% | Conditional `not_null` rule | `test_dq_defects_present` | `test_defects_were_actually_quarantined_not_merely_counted` |
+| Negative `amount_minor` | 0.02% | `range` rule → quarantine | `test_dq_defects_present` | `test_an_error_severity_rule_fails_the_run_and_records_why` |
+| Invalid `currency_code` | 0.015% | `enum_domain` rule → quarantine | `test_dq_defects_present` | `test_defects_were_actually_quarantined_not_merely_counted` |
+| `decline_reason_code` inconsistent with `status` | 0.05% | Cross-field `expression` rule (both directions) | `test_dq_defects_present` | `test_defects_were_actually_quarantined_not_merely_counted` |
+| FX rate date gaps | 5 dates, evenly spread | `continuity` rule (batch-level) + forward-fill | `test_fx_has_exactly_the_contracted_gaps` | `test_no_fact_has_a_null_gbp_amount` |
+| Disputes 0–90 days late | all disputes | Rolling-window reprocessing | `test_disputes_arrive_late_and_within_the_window` | `test_the_dispute_window_reprocesses_without_duplicating` |
+| `accounts` CDC `U`/`D` operations | 0–5 changes/account; 2% of changes are `D` | SCD2 close-out, incl. logical delete | `test_cdc_feed_has_seed_updates_and_logical_deletes` | `test_a_delete_only_batch_closes_the_incumbent`, `test_deleted_keys_have_no_current_version` |
+| `wallet_type` appears at month 10 | one-off | Schema evolution in bronze | `test_wallet_type_drift_is_real_not_simulated` | `test_bronze_absorbs_a_new_source_column_mid_feed` |
+
+Only the negative-amount row cites a test that asserts a **failed run** rather than a quarantine,
+and that is deliberate: `transactions.amount_minor.range` ships at `warn`, and that test is the one
+that escalates it to `error` to prove the gate can stop a load at all. Every other row here proves
+the quieter half — the row is captured and the run continues.
 
 The `wallet_type` drift is **real, not simulated**: transactions are written in two passes split at
 the month-10 boundary, so files before that date genuinely lack the column. JSON carries schema per

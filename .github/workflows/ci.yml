@@ -17,7 +17,7 @@
 #
 # The step that looks like paranoia and is not: "assert the suite actually ran". tests/conftest.py
 # skips the entire session when landing data is missing, which is right locally (one clear message
-# instead of 196 confusing failures) and is a trap in CI, where a skipped session is a green tick. A
+# instead of 198 confusing failures) and is a trap in CI, where a skipped session is a green tick. A
 # green build that proved nothing is worse than a red one, so the exit code is not trusted alone.
 name: ci
 
