@@ -10,7 +10,7 @@ Fabric notebook code; it runs on a laptop.
 > ### Status
 >
 > **What runs:** landing → bronze → silver → gold, end-to-end, from a cold start, on PySpark 3.5 /
-> Delta 3.2 — the same pairing as the Fabric Spark runtime. 265 tests pass locally, including
+> Delta 3.2 — the same pairing as the Fabric Spark runtime. 273 tests pass locally, including
 > run-it-twice idempotency, SCD2 interval invariants, a reconciliation that ties every bronze row to
 > a silver row, a quarantined row or a deduplicated one, and a second reconciliation in which every
 > difference between silver and the star schema is enumerated and attributed to a named cause.
@@ -163,7 +163,7 @@ make generate SCALE=tiny    # deterministic landing files under ./_onelake/files
 make seed                   # the metadata control plane: config, DQ rules, watermarks
 make run                    # bronze, silver, gold — driven entirely by meta_source_config
 make run                    # run it again — this is the interesting one
-make test                   # 265 tests
+make test                   # 273 tests
 ```
 
 The second `make run` is the point. It should do almost nothing, and say so:
@@ -350,7 +350,7 @@ rather than emitting a zero-width row that no point-in-time join could ever retu
 
 ## 7. What the tests actually prove
 
-`make test` — 265 tests. The ones that matter:
+`make test` — 273 tests. The ones that matter:
 
 | Claim | Test |
 |---|---|
@@ -447,7 +447,7 @@ Honest, because the alternative is worse. Three days were budgeted; this is the 
 | [`docs/design-decisions.md`](docs/design-decisions.md) | **Done** — fourteen decisions, the last four made *by* the code rather than before it, each with the cost it carries |
 | [`docs/architecture.md`](docs/architecture.md) | **Done** — the structural view: the one-way dependency graph, the six seams and what each one promises, the single-owner table, what changing one thing actually costs, and "what I would add next, and why" for every cut in §10 below |
 | [`docs/databricks-to-fabric.md`](docs/databricks-to-fabric.md) | **Done** — nine rows of translation, and then the places where a Databricks habit produces a design that is wrong on Fabric rather than merely unfamiliar. §10 lists five platform facts I would have stated confidently and wrongly from memory, with the Learn page that corrected each; one of them added a test to the gold suite |
-| `docs/cost-and-capacity.md` | Not written |
+| [`docs/cost-and-capacity.md`](docs/cost-and-capacity.md) | **Done** — the arithmetic, measured out of the Delta logs by `tools/lake_footprint.py` rather than estimated. It states up front the one number it cannot produce (CU-seconds per operation, which needs the Capacity Metrics app and a real capacity) and then does the half that is not a guess: on an F2 the Direct Lake guardrails are **3,855× away** from binding and the real ceiling is **one Medium node**. §5 corrects a prediction in `docs/architecture.md` §4 that measurement showed was answering the wrong question |
 
 Beyond this build, the honest list of what a production version needs and this does not have:
 live-tenant validation; streaming ingestion (Eventstream → Eventhouse) for authorisations; Purview
@@ -495,6 +495,8 @@ src/notebooks/nb_99_*.py      Seed the control plane.
 src/warehouse/ddl/            wh_gold DDL: schemas, dimensions, facts, aggregate, security.
 src/warehouse/procs/          The ten load procedures. The gold deliverable.
 tools/fabric_tsql_lint.py     The portability gate: 41 Fabric Warehouse subset rules over sqlglot.
+tools/lake_footprint.py       Measures the lake from its Delta logs and does the F2 guardrail
+                              arithmetic. Every number in docs/cost-and-capacity.md comes from here.
 
 orchestration/run.py          Local stand-in for the pl_master Fabric pipeline, all three stages.
 
@@ -505,7 +507,7 @@ semantic-model/measures.dax   Generated from the TMDL by tools/extract_dax.py. A
 tools/tmdl.py                 The TMDL reader the model's tests are built on, plus the lineage-tag
                               derivation.
 
-tests/                        265 tests. conftest.py builds an isolated lake per module.
+tests/                        273 tests. conftest.py builds an isolated lake per module.
 tests/test_import_graph.py    The one test whose subject is a document: it enforces the import
                               graph docs/architecture.md §1 describes.
 ```

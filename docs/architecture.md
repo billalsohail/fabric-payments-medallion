@@ -298,12 +298,22 @@ stops is more useful than the claim itself.
 | 100× the data | one `--scale` parameter | no — but see below |
 
 The last row is the one with a non-obvious answer, and the honest version is: the *parameter* is one
-value and the *consequences* are not. In order of what I would expect to break first — small-file
+value and the *consequences* are not. In order of what I expected to break first — small-file
 pressure in bronze, then shuffle behaviour in the SCD2 merges, then the partition strategy, then the
 gold surrogate-key assignment, which resolves six dimension lookups per fact row and is the
 statement most likely to spill on a distributed engine. That last one is question 1 of
-[`docs/fabric-deployment.md`](fabric-deployment.md) §1 for exactly this reason, and the capacity
-arithmetic is in [`docs/cost-and-capacity.md`](cost-and-capacity.md).
+[`docs/fabric-deployment.md`](fabric-deployment.md) §1 for exactly this reason.
+
+**Then I measured it, and the first item is wrong** — or rather, it is an answer to a question that
+"100× the data" does not actually ask. Bronze is partitioned by `ingest_date` at one live file per
+partition, so 100× the *rows* over the same window makes every file roughly 100× **bigger**
+(`br_transactions`: 28 KiB per file to about 2.8 MiB), which improves the small-file profile rather
+than degrading it. What degrades it is 100× the *window*, which is elapsed time and not volume at
+all — and by that measure the pressure is already here, at 1×, with `br_disputes` holding 256 rows
+in 95 files. The ordering above survives for items 2 to 4; item 1 needed a measurement to correct,
+and [`docs/cost-and-capacity.md`](cost-and-capacity.md) §5 is that measurement. The capacity
+arithmetic for the rest of the row is on the same page, which also finds that the Direct Lake
+guardrails everyone reaches for first are nearly 4,000× away from binding.
 
 ---
 
@@ -320,7 +330,7 @@ semantic-model/*.tmdl ──verified by──►  tests/test_semantic_model.py (
                       ──extracted by──►  tools/extract_dax.py         (drift fails CI)
                       ──evaluated by──►  dashboard/build_dashboard.py (the numbers are sensible)
 
-src/lib/*, notebooks  ──verified by──►  tests/  (265 tests; an isolated lake per module)
+src/lib/*, notebooks  ──verified by──►  tests/  (273 tests; an isolated lake per module)
 
 §1 of this page    ──verified by──►  tests/test_import_graph.py   (the ASTs, not the prose)
 ```
