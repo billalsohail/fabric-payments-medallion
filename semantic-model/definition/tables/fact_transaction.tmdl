@@ -1,0 +1,421 @@
+/// =====================================================================================
+/// fact_transaction — grain: one authorisation attempt
+///
+/// Every measure here is `SUM` or `COUNTROWS` over a stored additive column, or a `DIVIDE` of
+/// two such sums. **No rate is stored and no rate is a column.** That rule comes from
+/// `src/warehouse/procs/09_sp_load_agg_merchant_daily.sql`, which stores only counts and sums
+/// and says why in as many words:
+///
+///     "Rates belong in `semantic-model/measures.dax`, computed as
+///      DIVIDE(SUM(numerator), SUM(denominator)) at whatever grain the user filtered to.
+///      Storing them here would be faster and would produce wrong numbers."
+///
+/// The failure it prevents: a stored `approval_rate` per merchant-day, averaged across a month,
+/// weights a day with 3 attempts the same as a day with 30,000. The number looks plausible and
+/// is wrong by whatever the volume skew happens to be, which is the worst kind of wrong. Summing
+/// numerator and denominator separately and dividing once is the only form that survives
+/// aggregation, and it is the reason the additive flags are stored as `smallint` rather than
+/// `bit` — `SUM(is_declined)` is the decline count, and `bit` is not summable.
+///
+/// The other rule: every rate measure uses `DIVIDE` and not `/`. `DIVIDE` returns BLANK on a
+/// zero denominator; `/` returns Infinity, which formats as a percentage and appears in a
+/// visual. A merchant with no attempts should vanish from an approval-rate chart, not appear at
+/// the top of it.
+/// =====================================================================================
+table fact_transaction
+	lineageTag: 9b08b7ca-4ba2-56cf-b138-34349c19d123
+
+	/// Degenerate dimensions. Visible, because "show me that transaction" is a real question and
+	/// the id is the only answer to it.
+	column transaction_id
+		dataType: string
+		summarizeBy: none
+		sourceColumn: transaction_id
+
+	column card_id
+		dataType: string
+		summarizeBy: none
+		sourceColumn: card_id
+
+	column date_sk
+		dataType: int64
+		isHidden
+		summarizeBy: none
+		sourceColumn: date_sk
+
+	column account_sk
+		dataType: int64
+		isHidden
+		summarizeBy: none
+		sourceColumn: account_sk
+
+	column customer_sk
+		dataType: int64
+		isHidden
+		summarizeBy: none
+		sourceColumn: customer_sk
+
+	column merchant_sk
+		dataType: int64
+		isHidden
+		summarizeBy: none
+		sourceColumn: merchant_sk
+
+	column card_product_sk
+		dataType: int64
+		isHidden
+		summarizeBy: none
+		sourceColumn: card_product_sk
+
+	/// Denormalised from dim_account so a row-level-security filter can be applied to this table
+	/// directly. Hidden, because `dim_account[region]` is the column a report author should slice
+	/// on; this one exists for the security predicate, and two visible columns with the same name
+	/// and subtly different semantics is how a report ends up filtering the wrong one.
+	column account_region
+		dataType: string
+		isHidden
+		summarizeBy: none
+		sourceColumn: account_region
+
+	column currency_sk
+		dataType: int64
+		isHidden
+		summarizeBy: none
+		sourceColumn: currency_sk
+
+	column decline_reason_sk
+		dataType: int64
+		isHidden
+		summarizeBy: none
+		sourceColumn: decline_reason_sk
+
+	/// Three event times, and conflating any two puts late-arriving data in the wrong period.
+	/// `date_sk` — and therefore every date slicer in the model — is derived from `auth_ts`, so
+	/// "March volume" means attempts authorised in March. A settlement-period view has to go
+	/// through `settlement_date` explicitly, and there is no relationship on it: that would be a
+	/// second date role on this fact and it is not one anybody has asked for yet. If they do, it
+	/// is the `fact_dispute` pattern — an inactive relationship plus USERELATIONSHIP — not a
+	/// second date table.
+	column auth_ts
+		dataType: dateTime
+		formatString: dd/mm/yyyy hh:nn:ss
+		summarizeBy: none
+		sourceColumn: auth_ts
+
+	column capture_ts
+		dataType: dateTime
+		formatString: dd/mm/yyyy hh:nn:ss
+		summarizeBy: none
+		sourceColumn: capture_ts
+
+	column settlement_date
+		dataType: dateTime
+		formatString: dd/mm/yyyy
+		summarizeBy: none
+		sourceColumn: settlement_date
+
+	/// NULL on anything unsettled, which is what makes `[Average Settlement Lag (Days)]` a
+	/// measure over settled transactions only without needing a filter — `AVERAGE` ignores
+	/// blanks. Stated because that is load-bearing behaviour rather than a happy accident.
+	column settlement_lag_days
+		dataType: int64
+		formatString: #,0
+		summarizeBy: none
+		sourceColumn: settlement_lag_days
+
+	/// In the transaction's own currency, so summing across currencies is meaningless.
+	/// `summarizeBy: none` is the guardrail: a report author who drags this onto a card gets
+	/// nothing rather than a number that adds pence to yen. Every money measure in this model
+	/// uses `amount_gbp_minor` instead.
+	column amount_minor
+		dataType: int64
+		formatString: #,0
+		summarizeBy: none
+		sourceColumn: amount_minor
+
+	/// The reporting-currency conversion, and the only amount column any measure sums.
+	/// GBP always has 2 minor-unit digits, so the format string's /100 is exact — see the
+	/// minor-units note in dim_currency.tmdl.
+	column amount_gbp_minor
+		dataType: int64
+		formatString: \£#,0.00;(\£#,0.00);\£#,0.00
+		summarizeBy: none
+		sourceColumn: amount_gbp_minor
+
+	column fx_rate
+		dataType: decimal
+		formatString: #,0.00000000
+		summarizeBy: none
+		sourceColumn: fx_rate
+
+	/// A data-quality flag promoted to the serving layer on purpose. `docs/data-contracts.md`
+	/// requires that a forward-filled FX rate be flagged rather than silent, and a flag nobody
+	/// can see in the report is silent in every way that matters. `[FX Carried Share]` below is
+	/// what makes it visible.
+	column fx_rate_is_carried
+		dataType: boolean
+		summarizeBy: none
+		sourceColumn: fx_rate_is_carried
+
+	/// The additive flags. `summarizeBy: sum` is correct for these and is the one place in this
+	/// model where the implicit aggregation is the right one — but `discourageImplicitMeasures`
+	/// in model.tmdl means a report author still cannot use it directly, and has to go through
+	/// the named measures below. Both settings together are deliberate: the column is summable
+	/// for the measures' benefit, and the measures are the only supported entry point.
+	column is_approved
+		dataType: int64
+		formatString: #,0
+		summarizeBy: sum
+		sourceColumn: is_approved
+
+	column is_declined
+		dataType: int64
+		formatString: #,0
+		summarizeBy: sum
+		sourceColumn: is_declined
+
+	column is_reversed
+		dataType: int64
+		formatString: #,0
+		summarizeBy: sum
+		sourceColumn: is_reversed
+
+	column is_settled
+		dataType: int64
+		formatString: #,0
+		summarizeBy: sum
+		sourceColumn: is_settled
+
+	column transaction_status
+		dataType: string
+		summarizeBy: none
+		sourceColumn: transaction_status
+
+	column channel
+		dataType: string
+		summarizeBy: none
+		sourceColumn: channel
+
+	column country_code
+		dataType: string
+		summarizeBy: none
+		sourceColumn: country_code
+
+	/// On the fact as well as on dim_merchant, and they can differ: this is the MCC the acquirer
+	/// sent with the authorisation, `dim_merchant[mcc]` is the one on the merchant's record.
+	/// A mismatch is a real and interesting signal in payments, which is why both are kept.
+	column mcc
+		dataType: string
+		summarizeBy: none
+		sourceColumn: mcc
+
+	/// Only meaningful for `channel = 'ECOM'` — the generator sets it FALSE elsewhere, so an
+	/// unqualified 3DS comparison across all channels compares ECOM-with-3DS against
+	/// "everything else including every ATM withdrawal" and reports an uplift that is mostly a
+	/// channel-mix difference. `[3DS Approval Uplift (pp)]` filters to ECOM for that reason.
+	column is_3ds
+		dataType: boolean
+		summarizeBy: none
+		sourceColumn: is_3ds
+
+	/// NULL before month 10, because the source column did not exist until then. That nullability
+	/// *is* the schema-evolution story arriving at the serving layer: a report split by
+	/// `wallet_type` shows a blank group for the first nine months, and that blank is correct —
+	/// it means "not recorded", not "no wallet". A `COALESCE` to 'UNKNOWN' in the warehouse would
+	/// have hidden the distinction between "we did not capture this" and "there was no wallet".
+	column wallet_type
+		dataType: string
+		summarizeBy: none
+		sourceColumn: wallet_type
+
+	column device_id
+		dataType: string
+		isHidden
+		summarizeBy: none
+		sourceColumn: device_id
+
+	column load_batch_id
+		dataType: string
+		isHidden
+		summarizeBy: none
+		sourceColumn: load_batch_id
+
+	column loaded_ts
+		dataType: dateTime
+		isHidden
+		formatString: dd/mm/yyyy hh:nn:ss
+		summarizeBy: none
+		sourceColumn: loaded_ts
+
+	/// -------------------------------------------------------------------------------------
+	/// Base measures — the denominators and numerators everything else divides
+	/// -------------------------------------------------------------------------------------
+	/// The grain is one authorisation attempt, so the attempt count is a row count. It is a named
+	/// measure rather than inlined into each rate because it is the denominator of four of them,
+	/// and a denominator that is defined once is a denominator that cannot drift between
+	/// measures.
+	measure 'Attempts' = COUNTROWS(fact_transaction)
+		formatString: #,0
+		displayFolder: Volume
+
+	measure 'Approved Transactions' = SUM(fact_transaction[is_approved])
+		formatString: #,0
+		displayFolder: Volume
+
+	measure 'Declined Transactions' = SUM(fact_transaction[is_declined])
+		formatString: #,0
+		displayFolder: Volume
+
+	measure 'Reversed Transactions' = SUM(fact_transaction[is_reversed])
+		formatString: #,0
+		displayFolder: Volume
+
+	measure 'Settled Transactions' = SUM(fact_transaction[is_settled])
+		formatString: #,0
+		displayFolder: Volume
+
+	/// -------------------------------------------------------------------------------------
+	/// Rates — DIVIDE(SUM(numerator), SUM(denominator)), never stored
+	/// -------------------------------------------------------------------------------------
+	/// Correct at every grain the user can filter to, which is the property a stored rate does
+	/// not have. See the note at the top of this file.
+	measure 'Authorisation Rate' = DIVIDE([Approved Transactions], [Attempts])
+		formatString: 0.00%
+		displayFolder: Rates
+
+	measure 'Decline Rate' = DIVIDE([Declined Transactions], [Attempts])
+		formatString: 0.00%
+		displayFolder: Rates
+
+	/// The share of **declines in the current filter context** attributable to the reasons in
+	/// context — so on a bar chart by `dim_decline_reason[decline_reason_desc]` the bars sum to
+	/// 100%, and on a card with no reason filter it reads 100%. `ALL` on the dimension rather
+	/// than `ALLSELECTED` is deliberate: the denominator is every decline in the period, not
+	/// every decline the user happens to have left in the slicer, so removing a reason from a
+	/// slicer does not silently rescale the remaining bars.
+	///
+	/// The `IF` is what keeps row -1 (the "not applicable" member every approval points at) off
+	/// the visual: without it that group returns 0 and renders as a bar of zero height with a
+	/// label, which reads as a defect. See dim_decline_reason.tmdl.
+	measure 'Decline Rate by Reason' = ```
+			VAR DeclinesInContext = [Declined Transactions]
+			VAR AllDeclines =
+			    CALCULATE([Declined Transactions], REMOVEFILTERS(dim_decline_reason))
+			RETURN
+			    IF(DeclinesInContext > 0, DIVIDE(DeclinesInContext, AllDeclines))
+			```
+		formatString: 0.00%
+		displayFolder: Rates
+
+	/// The share of declines that could have been retried, which is the operationally actionable
+	/// half of a decline rate: an issuer-side "insufficient funds" is not a problem anyone can
+	/// fix, and a retriable technical decline is.
+	measure 'Retriable Decline Share' = ```
+			DIVIDE(
+			    CALCULATE([Declined Transactions], dim_decline_reason[is_retriable] = TRUE),
+			    [Declined Transactions]
+			)
+			```
+		formatString: 0.00%
+		displayFolder: Rates
+
+	/// -------------------------------------------------------------------------------------
+	/// Volume — GBP-normalised, via the FX conversion done once in silver
+	/// -------------------------------------------------------------------------------------
+	/// `amount_gbp_minor` and never `amount_minor`: a sum of mixed-currency minor units is
+	/// meaningless. The conversion happened in silver against `dim_fx_rate`'s effective-dated
+	/// intervals, which is why this model has no FX table and no rate lookup — see
+	/// `src/warehouse/ddl/02_dimensions.sql`, which says `dim_fx_rate` is there because the fact
+	/// join needs it "and the semantic model does not".
+	measure 'Attempted Volume (GBP)' = SUM(fact_transaction[amount_gbp_minor])
+		formatString: \£#,0.00;(\£#,0.00);\£#,0.00
+		displayFolder: Volume
+
+	measure 'Approved Volume (GBP)' = ```
+			CALCULATE(
+			    SUM(fact_transaction[amount_gbp_minor]),
+			    fact_transaction[is_approved] = 1
+			)
+			```
+		formatString: \£#,0.00;(\£#,0.00);\£#,0.00
+		displayFolder: Volume
+
+	measure 'Average Approved Value (GBP)' = DIVIDE([Approved Volume (GBP)], [Approved Transactions])
+		formatString: \£#,0.00;(\£#,0.00);\£#,0.00
+		displayFolder: Volume
+
+	/// -------------------------------------------------------------------------------------
+	/// Settlement
+	/// -------------------------------------------------------------------------------------
+	/// Over settled transactions only, because `settlement_lag_days` is NULL on the rest and
+	/// `AVERAGE` ignores blanks. Deliberately **not** `DIVIDE(SUM(lag), [Attempts])`, which would
+	/// divide a settled-only numerator by an all-attempts denominator and understate the lag by
+	/// whatever share is unsettled. This is the one place in this file where an average is the
+	/// right shape rather than a ratio of two sums, and the reason is that the denominator is not
+	/// a stored count.
+	measure 'Average Settlement Lag (Days)' = AVERAGE(fact_transaction[settlement_lag_days])
+		formatString: #,0.0
+		displayFolder: Settlement
+
+	measure 'Settlement Rate' = DIVIDE([Settled Transactions], [Approved Transactions])
+		formatString: 0.00%
+		displayFolder: Settlement
+
+	/// -------------------------------------------------------------------------------------
+	/// 3DS uplift — the measure most likely to be quoted wrong
+	/// -------------------------------------------------------------------------------------
+	/// Expressed in **percentage points**, not as a ratio, because "3DS improves approval by 4%"
+	/// is ambiguous between +4pp and +4% relative and the two differ by a factor of twenty at
+	/// these rates. The name says `(pp)` for that reason.
+	///
+	/// Restricted to `channel = 'ECOM'` on both sides. `is_3ds` is FALSE for POS, ATM and MOTO
+	/// by construction, so an unrestricted comparison would put every ATM withdrawal in the
+	/// "without 3DS" group and report a channel-mix difference as a 3DS effect.
+	///
+	/// Returns BLANK unless **both** sides have attempts. A one-sided comparison is not an
+	/// uplift, and returning the present side's rate as if it were one is how a filtered visual
+	/// produces a confident wrong number.
+	///
+	/// What this measure still is not: causal. Merchants choose when to invoke 3DS, and they
+	/// invoke it on the transactions they are least sure about — so selection runs against the
+	/// measured effect, and the honest reading is "3DS-flagged ECOM traffic approves N pp
+	/// differently", not "3DS causes N pp". A report that wants the causal claim needs an
+	/// experiment, not a measure.
+	measure '3DS Approval Uplift (pp)' = ```
+			VAR With3DS =
+			    CALCULATE([Authorisation Rate], fact_transaction[channel] = "ECOM", fact_transaction[is_3ds] = TRUE)
+			VAR Without3DS =
+			    CALCULATE([Authorisation Rate], fact_transaction[channel] = "ECOM", fact_transaction[is_3ds] = FALSE)
+			RETURN
+			    IF(
+			        NOT ISBLANK(With3DS) && NOT ISBLANK(Without3DS),
+			        (With3DS - Without3DS) * 100
+			    )
+			```
+		formatString: +0.00;-0.00;0.00
+		displayFolder: Rates
+
+	/// -------------------------------------------------------------------------------------
+	/// Data quality, surfaced in the report rather than buried in meta_dq_results
+	/// -------------------------------------------------------------------------------------
+	/// The share of volume converted at a forward-filled FX rate. A reader who sees
+	/// `[Attempted Volume (GBP)]` move should be able to tell whether the rates behind it were
+	/// published or carried, and this is the measure that tells them. It is the serving-layer end
+	/// of the contract in `docs/data-contracts.md` that the fill be flagged and not silent —
+	/// `src/lib/dq.py` records the gap in `meta_dq_results`, and this puts the consequence on the
+	/// same page as the number it affects.
+	measure 'FX Carried Share' = ```
+			DIVIDE(
+			    CALCULATE([Attempts], fact_transaction[fx_rate_is_carried] = TRUE),
+			    [Attempts]
+			)
+			```
+		formatString: 0.00%
+		displayFolder: Data quality
+
+	partition fact_transaction = entity
+		mode: directLake
+		source
+			entityName: fact_transaction
+			schemaName: dbo
+			expressionSource: DatabaseQuery

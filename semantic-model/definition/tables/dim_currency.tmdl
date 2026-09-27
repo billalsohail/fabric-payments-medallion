@@ -1,0 +1,56 @@
+/// =====================================================================================
+/// dim_currency — Type 1, and the home of the minor-units contract
+///
+/// `minor_unit_digits` is the column that makes every money figure in this repo correct, and it
+/// is **not** used by any measure in this model. That is deliberate and worth being explicit
+/// about, because it looks like an omission:
+///
+///   * `amount_minor` is in the transaction's own currency, so summing it across currencies is
+///     meaningless — 100 JPY and 100 GBP are not 200 of anything. No measure sums it.
+///   * `amount_gbp_minor` is the reporting-currency conversion, and GBP has exactly 2 minor-unit
+///     digits, always. So every money measure here divides by 100 via a format string and needs
+///     no lookup.
+///
+/// The scaling that `minor_unit_digits` drives — `10^(2 - digits)`, which is what makes JPY
+/// (0 digits) convert correctly — happens **once**, in silver, before the fact is written. By
+/// the time data reaches this model the problem is already solved, and a measure that consulted
+/// this column would be solving it a second time and disagreeing with the warehouse.
+///
+/// The column stays visible anyway, because "why is this JPY figure what it is" is a question
+/// someone will ask of a report, and the answer is in this column.
+/// =====================================================================================
+table dim_currency
+	lineageTag: cb95919f-603d-550a-a9b2-fd2a308a9acd
+
+	column currency_sk
+		dataType: int64
+		isHidden
+		summarizeBy: none
+		sourceColumn: currency_sk
+
+	column currency_code
+		dataType: string
+		summarizeBy: none
+		sourceColumn: currency_code
+
+	column currency_name
+		dataType: string
+		summarizeBy: none
+		sourceColumn: currency_name
+
+	column minor_unit_digits
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: minor_unit_digits
+
+	column is_reporting_currency
+		dataType: boolean
+		summarizeBy: none
+		sourceColumn: is_reporting_currency
+
+	partition dim_currency = entity
+		mode: directLake
+		source
+			entityName: dim_currency
+			schemaName: dbo
+			expressionSource: DatabaseQuery

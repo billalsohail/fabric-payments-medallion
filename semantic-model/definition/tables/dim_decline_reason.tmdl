@@ -1,0 +1,54 @@
+/// =====================================================================================
+/// dim_decline_reason — Type 1, and the unknown member that is not an error
+///
+/// Row -1 is reached by **every approved transaction**, because `decline_reason_sk` is NOT NULL
+/// on the fact and an approval has no decline reason (`03_facts.sql` at the column). So this
+/// dimension's -1 row means "not applicable", not "lookup failed" — and the two are
+/// indistinguishable in the key, which is the cost of the unknown-member pattern.
+///
+/// The consequence for reporting, and it catches people: a table visual of
+/// `[Declined Transactions]` by `decline_reason_desc` will show a row for the -1 member with a
+/// value of zero, because approvals are in the -1 group and none of them are declines. That is
+/// correct but it looks like a defect. `[Decline Rate by Reason]` in measures.dax returns BLANK
+/// rather than 0 in that group so the row disappears from the visual instead of sitting at the
+/// top of it.
+///
+/// `is_retriable` is the column that makes this dimension worth having rather than carrying the
+/// code on the fact: "what share of our declines were retriable" is the question a payments team
+/// actually asks, and it is an attribute of the reason, not of the transaction.
+/// =====================================================================================
+table dim_decline_reason
+	lineageTag: 77190fb6-efa1-5d49-a930-b09822992880
+
+	column decline_reason_sk
+		dataType: int64
+		isHidden
+		summarizeBy: none
+		sourceColumn: decline_reason_sk
+
+	column decline_reason_code
+		dataType: string
+		summarizeBy: none
+		sourceColumn: decline_reason_code
+
+	column decline_reason_desc
+		dataType: string
+		summarizeBy: none
+		sourceColumn: decline_reason_desc
+
+	column decline_category
+		dataType: string
+		summarizeBy: none
+		sourceColumn: decline_category
+
+	column is_retriable
+		dataType: boolean
+		summarizeBy: none
+		sourceColumn: is_retriable
+
+	partition dim_decline_reason = entity
+		mode: directLake
+		source
+			entityName: dim_decline_reason
+			schemaName: dbo
+			expressionSource: DatabaseQuery

@@ -1,0 +1,7 @@
+/// sm_payments — the Direct Lake semantic model over wh_gold.
+///
+/// UNVALIDATED: authored against the TMDL format, never round-tripped through a live Fabric
+/// tenant. See semantic-model/README.md. The compatibility level and the `database` block are
+/// the two things most likely to need adjusting on first import.
+database
+	compatibilityLevel: 1604

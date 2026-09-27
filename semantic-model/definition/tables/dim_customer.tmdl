@@ -1,0 +1,146 @@
+/// =====================================================================================
+/// dim_customer — SCD2, and the only table in the model carrying masked columns
+///
+/// The SCD2 notes on dim_account apply here unchanged: the grain is a customer *version*,
+/// `customer_id` repeats, and the relationship is on `customer_sk`.
+///
+/// **What is different is the masking, and what the semantic model can and cannot do about
+/// it.** `src/warehouse/ddl/02_dimensions.sql` declares `first_name`, `last_name`, `email` and
+/// `date_of_birth` with `MASKED WITH`, and `05_security.sql` holds the `GRANT UNMASK` templates.
+/// Dynamic data masking is applied by the **warehouse**, at the moment the data is read, per
+/// principal. So:
+///
+///   * In **DirectQuery**, each user's query carries their own identity and the mask applies
+///     per user. That is the case the masking was designed for.
+///   * In **Direct Lake**, the data is paged out of OneLake under the model's own identity,
+///     not the report viewer's. A mask defined in the warehouse therefore does **not**
+///     follow the data into a Direct Lake model, and neither does warehouse RLS.
+///
+/// That is not a bug in either layer; it is the boundary, and pretending otherwise is how PII
+/// ends up in a report. The model's answer is in two parts and both are needed:
+///
+///   1. `birth_year` exists in the warehouse specifically so the model has a usable age
+///      attribute that is not a date of birth. `date_of_birth` itself is hidden here.
+///   2. RLS and object-level security for this model have to be **restated at the model
+///      level** (roles in the semantic model), not inherited. Those roles are not in this
+///      repo: they are one of the named gaps in README.md, because writing role definitions I
+///      cannot test against a tenant would be the exact kind of unverifiable claim this project
+///      is trying not to make.
+///
+/// The one thing that *is* inherited: `account_region` on both facts, denormalised by the
+/// loaders precisely so a filter can be applied to the fact directly. That is the mechanism a
+/// model-level RLS role would use.
+/// =====================================================================================
+table dim_customer
+	lineageTag: 6126af40-299f-56b9-9170-2a41d53d00eb
+
+	column customer_sk
+		dataType: int64
+		isHidden
+		summarizeBy: none
+		sourceColumn: customer_sk
+
+	column customer_id
+		dataType: string
+		summarizeBy: none
+		sourceColumn: customer_id
+
+	column first_name
+		dataType: string
+		isHidden
+		summarizeBy: none
+		sourceColumn: first_name
+
+	column last_name
+		dataType: string
+		isHidden
+		summarizeBy: none
+		sourceColumn: last_name
+
+	column email
+		dataType: string
+		isHidden
+		summarizeBy: none
+		sourceColumn: email
+
+	/// Hidden, and `birth_year` is what the model exposes instead. See the masking note above.
+	column date_of_birth
+		dataType: dateTime
+		isHidden
+		formatString: dd/mm/yyyy
+		summarizeBy: none
+		sourceColumn: date_of_birth
+
+	/// `summarizeBy: none` matters more here than on most columns: a year is an integer and the
+	/// default would happily offer to sum it.
+	column birth_year
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: birth_year
+
+	column kyc_status
+		dataType: string
+		summarizeBy: none
+		sourceColumn: kyc_status
+
+	column country_code
+		dataType: string
+		summarizeBy: none
+		sourceColumn: country_code
+
+	column segment
+		dataType: string
+		summarizeBy: none
+		sourceColumn: segment
+
+	column marketing_opt_in
+		dataType: boolean
+		summarizeBy: none
+		sourceColumn: marketing_opt_in
+
+	column valid_from
+		dataType: dateTime
+		formatString: dd/mm/yyyy hh:nn:ss
+		summarizeBy: none
+		sourceColumn: valid_from
+
+	column valid_to
+		dataType: dateTime
+		formatString: dd/mm/yyyy hh:nn:ss
+		summarizeBy: none
+		sourceColumn: valid_to
+
+	column is_current
+		dataType: boolean
+		summarizeBy: none
+		sourceColumn: is_current
+
+	column scd_hash
+		dataType: int64
+		isHidden
+		summarizeBy: none
+		sourceColumn: scd_hash
+
+	column load_batch_id
+		dataType: string
+		isHidden
+		summarizeBy: none
+		sourceColumn: load_batch_id
+
+	column loaded_ts
+		dataType: dateTime
+		isHidden
+		formatString: dd/mm/yyyy hh:nn:ss
+		summarizeBy: none
+		sourceColumn: loaded_ts
+
+	measure 'Active Customers' = CALCULATE(DISTINCTCOUNT(dim_customer[customer_id]), dim_customer[is_current] = TRUE)
+		formatString: #,0
+		displayFolder: Customers
+
+	partition dim_customer = entity
+		mode: directLake
+		source
+			entityName: dim_customer
+			schemaName: dbo
+			expressionSource: DatabaseQuery

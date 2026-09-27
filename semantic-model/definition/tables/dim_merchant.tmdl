@@ -1,0 +1,136 @@
+/// =====================================================================================
+/// dim_merchant — SCD2 on risk_score
+///
+/// The SCD2 notes on dim_account apply. The reason this one is Type 2 is `risk_score`: a
+/// merchant whose score moved from 20 to 90 in June must not make last January's transactions
+/// look high-risk (`02_dimensions.sql` says so at the table). That is the single clearest
+/// argument in this repo for Type 2 over Type 1, because the failure mode of Type 1 here is not
+/// a missing history — it is a fraud-rate trend that is actively misleading.
+///
+/// `risk_score` is the one dimension column in this model with `summarizeBy: average` rather
+/// than `none`. A sum of risk scores is meaningless; an average across a merchant set is not.
+/// It is still the wrong default in one specific way — an average over *versions* weights a
+/// merchant that changed often more heavily than one that never changed — so
+/// `[Average Merchant Risk Score]` exists to do it per current merchant instead, and the
+/// implicit aggregation is a convenience for exploration rather than a number to report.
+/// =====================================================================================
+table dim_merchant
+	lineageTag: 8568912f-3fd5-5548-b395-f5f6cbb99b2d
+
+	column merchant_sk
+		dataType: int64
+		isHidden
+		summarizeBy: none
+		sourceColumn: merchant_sk
+
+	column merchant_id
+		dataType: string
+		summarizeBy: none
+		sourceColumn: merchant_id
+
+	column merchant_name
+		dataType: string
+		summarizeBy: none
+		sourceColumn: merchant_name
+
+	/// Four digits and therefore a string, not an integer: MCC 0742 is not 742, and a numeric
+	/// type would drop the leading zero and then fail to join to `fact_transaction.mcc`.
+	column mcc
+		dataType: string
+		summarizeBy: none
+		sourceColumn: mcc
+
+	column mcc_category
+		dataType: string
+		summarizeBy: none
+		sourceColumn: mcc_category
+
+	column country_code
+		dataType: string
+		summarizeBy: none
+		sourceColumn: country_code
+
+	column acquirer_id
+		dataType: string
+		summarizeBy: none
+		sourceColumn: acquirer_id
+
+	column risk_score
+		dataType: int64
+		formatString: #,0
+		summarizeBy: average
+		sourceColumn: risk_score
+
+	column risk_tier
+		dataType: string
+		summarizeBy: none
+		sourceColumn: risk_tier
+
+	column merchant_status
+		dataType: string
+		summarizeBy: none
+		sourceColumn: merchant_status
+
+	column onboarded_date
+		dataType: dateTime
+		formatString: dd/mm/yyyy
+		summarizeBy: none
+		sourceColumn: onboarded_date
+
+	column valid_from
+		dataType: dateTime
+		formatString: dd/mm/yyyy hh:nn:ss
+		summarizeBy: none
+		sourceColumn: valid_from
+
+	column valid_to
+		dataType: dateTime
+		formatString: dd/mm/yyyy hh:nn:ss
+		summarizeBy: none
+		sourceColumn: valid_to
+
+	column is_current
+		dataType: boolean
+		summarizeBy: none
+		sourceColumn: is_current
+
+	column scd_hash
+		dataType: int64
+		isHidden
+		summarizeBy: none
+		sourceColumn: scd_hash
+
+	column load_batch_id
+		dataType: string
+		isHidden
+		summarizeBy: none
+		sourceColumn: load_batch_id
+
+	column loaded_ts
+		dataType: dateTime
+		isHidden
+		formatString: dd/mm/yyyy hh:nn:ss
+		summarizeBy: none
+		sourceColumn: loaded_ts
+
+	measure 'Active Merchants' = CALCULATE(DISTINCTCOUNT(dim_merchant[merchant_id]), dim_merchant[is_current] = TRUE)
+		formatString: #,0
+		displayFolder: Merchants
+
+	/// One row per merchant, not per version — see the note at the top. `AVERAGEX` over the
+	/// current versions rather than `AVERAGE` over the column.
+	measure 'Average Merchant Risk Score' = ```
+			AVERAGEX(
+			    CALCULATETABLE(VALUES(dim_merchant[merchant_sk]), dim_merchant[is_current] = TRUE),
+			    CALCULATE(MAX(dim_merchant[risk_score]))
+			)
+			```
+		formatString: #,0.0
+		displayFolder: Merchants
+
+	partition dim_merchant = entity
+		mode: directLake
+		source
+			entityName: dim_merchant
+			schemaName: dbo
+			expressionSource: DatabaseQuery

@@ -1,0 +1,142 @@
+/// =====================================================================================
+/// dim_date — the marked date table
+///
+/// `dataCategory: Time` plus `isKey` on `full_date` is what "Mark as date table" writes, and
+/// it is required for the time-intelligence functions in measures.dax (`DATEADD`, `DATESINROW`,
+/// rolling windows) to be correct rather than merely to compile. Without the marking those
+/// functions fall back to the engine's auto date/time tables, which this model disables
+/// (`__PBI_TimeIntelligenceEnabled = 0` in model.tmdl) — so they would silently return the
+/// wrong shape rather than erroring.
+///
+/// **This is a real warehouse table, not `CALENDAR()`.** Direct Lake does not support
+/// calculated tables, so the calendar has to exist in `wh_gold` — which it does, built by
+/// `src/warehouse/procs/01_sp_load_dim_date.sql`. Worth knowing before designing the star: a
+/// habit carried over from Import models (generate the calendar in DAX) does not survive the
+/// move to Direct Lake, and the fix is a warehouse change, not a model change.
+///
+/// Row -1 is the unknown member and it carries a **real date**, not NULL — see the comment on
+/// `fact_dispute.resolved_date_sk` in `src/warehouse/ddl/03_facts.sql` for why. The consequence
+/// here: this table has one row that is not a genuine calendar date, so a `MIN(full_date)`
+/// over it is not the start of the reporting period. Measures that need the period bounds take
+/// them from the filter context, never from this column's extremes.
+/// =====================================================================================
+table dim_date
+	lineageTag: 9e1becf5-d466-5030-9fb9-5efc2047b19e
+	dataCategory: Time
+
+	column date_sk
+		dataType: int64
+		isHidden
+		summarizeBy: none
+		sourceColumn: date_sk
+
+	/// The marked date column. `isKey` here is the marking, not a uniqueness hint for the
+	/// optimiser.
+	column full_date
+		dataType: dateTime
+		isKey
+		formatString: dd/mm/yyyy
+		summarizeBy: none
+		sourceColumn: full_date
+
+	column day_of_month
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: day_of_month
+
+	column day_of_week
+		dataType: int64
+		isHidden
+		summarizeBy: none
+		sourceColumn: day_of_week
+
+	/// `sortByColumn` is the difference between a chart reading Mon→Sun and one reading
+	/// Fri, Mon, Sat, Sun, Thu, Tue, Wed. Alphabetical is the default and it is always wrong
+	/// for a day or month name.
+	column day_name
+		dataType: string
+		summarizeBy: none
+		sourceColumn: day_name
+		sortByColumn: day_of_week
+
+	column day_of_year
+		dataType: int64
+		isHidden
+		summarizeBy: none
+		sourceColumn: day_of_year
+
+	column iso_week
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: iso_week
+
+	column month_number
+		dataType: int64
+		isHidden
+		summarizeBy: none
+		sourceColumn: month_number
+
+	column month_name
+		dataType: string
+		summarizeBy: none
+		sourceColumn: month_name
+		sortByColumn: month_number
+
+	column month_start_date
+		dataType: dateTime
+		isHidden
+		formatString: dd/mm/yyyy
+		summarizeBy: none
+		sourceColumn: month_start_date
+
+	column month_end_date
+		dataType: dateTime
+		isHidden
+		formatString: dd/mm/yyyy
+		summarizeBy: none
+		sourceColumn: month_end_date
+
+	column quarter_number
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: quarter_number
+
+	column year_number
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: year_number
+
+	/// Sorts correctly as an integer (202603 > 202512) which a "2026-03" string would not, and
+	/// is the column a report author should reach for over a Year+Month hierarchy when a flat
+	/// axis is wanted.
+	column year_month
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: year_month
+
+	column is_weekend
+		dataType: boolean
+		summarizeBy: none
+		sourceColumn: is_weekend
+
+	column is_month_end
+		dataType: boolean
+		summarizeBy: none
+		sourceColumn: is_month_end
+
+	hierarchy Calendar
+		level Year
+			column: year_number
+		level Quarter
+			column: quarter_number
+		level Month
+			column: month_name
+		level Date
+			column: full_date
+
+	partition dim_date = entity
+		mode: directLake
+		source
+			entityName: dim_date
+			schemaName: dbo
+			expressionSource: DatabaseQuery

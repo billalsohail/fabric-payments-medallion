@@ -1,0 +1,80 @@
+/// =====================================================================================
+/// dim_card_product — Type 1 with effective dates, which is not the same as Type 2
+///
+/// `active_from` / `active_to` describe when the *product* was on sale. They are not SCD2
+/// validity intervals: there is one row per product, and changing a product's name overwrites
+/// it. The distinction matters because the columns look identical to `valid_from`/`valid_to` on
+/// the three SCD2 dimensions and mean something different — these bound the product's
+/// commercial life, those bound a version's correctness window.
+///
+/// Type 1 is the right call here because nothing about a card product changes in a way anyone
+/// needs to attribute in time. If `tier` started moving (a product repositioned from Standard to
+/// Premium mid-year) that judgement would have to be revisited, and the change would be a
+/// warehouse change — `03_sp_load_dim_account.sql`'s SCD2 merge is the pattern to copy.
+/// =====================================================================================
+table dim_card_product
+	lineageTag: 2ae4e607-231e-5084-889d-d1b67b0fdf4b
+
+	column card_product_sk
+		dataType: int64
+		isHidden
+		summarizeBy: none
+		sourceColumn: card_product_sk
+
+	column card_product_code
+		dataType: string
+		summarizeBy: none
+		sourceColumn: card_product_code
+
+	column product_name
+		dataType: string
+		summarizeBy: none
+		sourceColumn: product_name
+
+	column network
+		dataType: string
+		summarizeBy: none
+		sourceColumn: network
+
+	column tier
+		dataType: string
+		summarizeBy: none
+		sourceColumn: tier
+
+	column annual_fee_minor
+		dataType: int64
+		formatString: \£#,0.00;(\£#,0.00);\£#,0.00
+		summarizeBy: none
+		sourceColumn: annual_fee_minor
+
+	column active_from
+		dataType: dateTime
+		formatString: dd/mm/yyyy
+		summarizeBy: none
+		sourceColumn: active_from
+
+	column active_to
+		dataType: dateTime
+		formatString: dd/mm/yyyy
+		summarizeBy: none
+		sourceColumn: active_to
+
+	column load_batch_id
+		dataType: string
+		isHidden
+		summarizeBy: none
+		sourceColumn: load_batch_id
+
+	column loaded_ts
+		dataType: dateTime
+		isHidden
+		formatString: dd/mm/yyyy hh:nn:ss
+		summarizeBy: none
+		sourceColumn: loaded_ts
+
+	partition dim_card_product = entity
+		mode: directLake
+		source
+			entityName: dim_card_product
+			schemaName: dbo
+			expressionSource: DatabaseQuery

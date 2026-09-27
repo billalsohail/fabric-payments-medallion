@@ -1,0 +1,158 @@
+/// =====================================================================================
+/// Relationships
+///
+/// Every relationship here corresponds to a `NOT ENFORCED` FOREIGN KEY declared in
+/// `src/warehouse/ddl/04_constraints.sql`, and that correspondence is deliberate rather than
+/// incidental: relationship auto-detection over the SQL analytics endpoint reads those declared
+/// FKs, so the constraints file is what makes this file mostly automatic instead of
+/// hand-drawn. `tests/test_semantic_model.py` asserts the two sets match in both directions —
+/// a relationship here with no FK behind it, or an FK with no relationship, both fail.
+///
+/// Three properties are set on every single one, and the defaults are wrong for all three:
+///
+///   `crossFilteringBehavior: oneDirection` — the default for a many-to-one is already single,
+///   but stating it stops the "just make it bidirectional to fix my visual" edit that
+///   introduces ambiguous filter paths a year later. With two facts sharing five dimensions,
+///   one bidirectional relationship is enough to make a measure's value depend on which
+///   visual it is in.
+///
+///   `isKey` is *not* used on the many side, obviously — but note the one side is the
+///   **surrogate** key for every dimension, never the business key. For the three SCD2
+///   dimensions this is the whole point: `dim_account` holds several rows per `account_id`,
+///   so a relationship on `account_id` would be many-to-many and would re-resolve the version
+///   at query time — restating history every time a risk band changes. Joining on
+///   `account_sk` freezes the version the loader chose by comparing `auth_ts` to the validity
+///   interval. Point-in-time correctness is a *modelling* property here, not just an ETL one.
+///
+///   Referential integrity is **not** declared (`relyOnReferentialIntegrity` is absent).
+///   Direct Lake does not use it the way DirectQuery does, and asserting it would be asserting
+///   something no engine enforces — `04_constraints.sql` is explicit that the DQ layer is the
+///   actual guarantee. Every FK resolves because the loaders COALESCE to the -1 unknown
+///   member, so there is nothing to gain by claiming it and a wrong-results failure mode if
+///   the claim ever stopped holding.
+/// =====================================================================================
+
+/// fact_transaction → dim_date on the authorisation date. One date role on this fact, so this
+/// one is unambiguous and active.
+relationship rel_ft_date
+	fromColumn: fact_transaction.date_sk
+	toColumn: dim_date.date_sk
+	crossFilteringBehavior: oneDirection
+
+relationship rel_ft_account
+	fromColumn: fact_transaction.account_sk
+	toColumn: dim_account.account_sk
+	crossFilteringBehavior: oneDirection
+
+/// Present *and* redundant-looking, because a customer can be reached through dim_account too.
+/// It is kept because the path through dim_account is a path through a *versioned* dimension:
+/// filtering customers via account would filter to the account versions in context, not to the
+/// customer. Two direct relationships, one ambiguous path avoided — which is why
+/// dim_account → dim_customer is deliberately absent from this file.
+relationship rel_ft_customer
+	fromColumn: fact_transaction.customer_sk
+	toColumn: dim_customer.customer_sk
+	crossFilteringBehavior: oneDirection
+
+relationship rel_ft_merchant
+	fromColumn: fact_transaction.merchant_sk
+	toColumn: dim_merchant.merchant_sk
+	crossFilteringBehavior: oneDirection
+
+relationship rel_ft_card_product
+	fromColumn: fact_transaction.card_product_sk
+	toColumn: dim_card_product.card_product_sk
+	crossFilteringBehavior: oneDirection
+
+relationship rel_ft_currency
+	fromColumn: fact_transaction.currency_sk
+	toColumn: dim_currency.currency_sk
+	crossFilteringBehavior: oneDirection
+
+/// Resolves to the -1 unknown member for every approved transaction, which is a legitimate
+/// "not applicable" rather than a failed lookup (03_facts.sql says so at the column). The
+/// consequence for this model: a decline-reason slicer with no explicit filter includes
+/// approvals under whatever `dim_decline_reason` calls row -1, so
+/// `[Decline Rate by Reason]` in measures.dax is written to be safe under that slicer rather
+/// than assuming it is never applied.
+relationship rel_ft_decline_reason
+	fromColumn: fact_transaction.decline_reason_sk
+	toColumn: dim_decline_reason.decline_reason_sk
+	crossFilteringBehavior: oneDirection
+
+/// -------------------------------------------------------------------------------------
+/// fact_dispute — the role-playing dimension, and the only interesting part of this file
+/// -------------------------------------------------------------------------------------
+/// `fact_dispute` has two FKs to `dim_date`: `raised_date_sk` and `resolved_date_sk`
+/// (04_constraints.sql:189-195). A star cannot have two active relationships between the same
+/// pair of tables — the filter path would be ambiguous and the engine rejects it — so one is
+/// active and one is not, and the inactive one is switched on per measure with
+/// `USERELATIONSHIP`.
+///
+/// **Raised is the active role, and that is a business decision, not a coin toss.** The
+/// default meaning of "disputes in March" is disputes *raised* in March: it is the number that
+/// is final the moment it happens, and the one an operations team is measured on. Resolved-date
+/// counts restate — a dispute raised in March and resolved in May moves out of March's
+/// resolved figure into May's, so a report built on resolved-by-default shows last month's
+/// numbers changing every week. Whichever role is active becomes the answer to every
+/// un-thought-about question, so it should be the one that does not move.
+///
+/// The measures that genuinely need the other role say so explicitly:
+/// `[Dispute Resolution Days]` and `[Disputes Resolved]` in measures.dax both wrap
+/// `USERELATIONSHIP(fact_dispute[resolved_date_sk], dim_date[date_sk])`.
+///
+/// The alternative — a second date dimension (`dim_resolved_date`) as a view alias — is the
+/// usual pattern and is *worse here*. Two date tables means two date hierarchies in the field
+/// list, only one can be the model's marked date table for time intelligence, and on Fabric an
+/// alias view over a warehouse table is a maintenance item that has to be kept in step with
+/// `dim_date` by hand. `04_constraints.sql:178-181` commits to this choice in writing; this is
+/// where that commitment is honoured.
+relationship rel_fd_raised_date
+	fromColumn: fact_dispute.raised_date_sk
+	toColumn: dim_date.date_sk
+	crossFilteringBehavior: oneDirection
+
+/// Inactive, and switched on by USERELATIONSHIP where the resolved role is what is meant.
+///
+/// `resolved_date_sk` is NOT NULL on an open dispute too — it resolves to the -1 unknown
+/// member rather than being left NULL (03_facts.sql). So a measure using this role must
+/// exclude open disputes itself; the relationship will happily count them all against
+/// whatever date row -1 is. That is the trap in this pattern and the reason
+/// `[Disputes Resolved]` filters on `is_open = 0` rather than trusting the join.
+relationship rel_fd_resolved_date
+	isActive: false
+	fromColumn: fact_dispute.resolved_date_sk
+	toColumn: dim_date.date_sk
+	crossFilteringBehavior: oneDirection
+
+relationship rel_fd_account
+	fromColumn: fact_dispute.account_sk
+	toColumn: dim_account.account_sk
+	crossFilteringBehavior: oneDirection
+
+relationship rel_fd_merchant
+	fromColumn: fact_dispute.merchant_sk
+	toColumn: dim_merchant.merchant_sk
+	crossFilteringBehavior: oneDirection
+
+relationship rel_fd_currency
+	fromColumn: fact_dispute.currency_sk
+	toColumn: dim_currency.currency_sk
+	crossFilteringBehavior: oneDirection
+
+/// -------------------------------------------------------------------------------------
+/// agg_merchant_daily
+/// -------------------------------------------------------------------------------------
+/// Two relationships only, because the table has two keys: it is a merchant-day grain and
+/// nothing else. It is exposed as its own table rather than registered as a user-defined
+/// **aggregation** over `fact_transaction`, and the reason is in README.md under
+/// "Why agg_merchant_daily is not an aggregation".
+relationship rel_agg_date
+	fromColumn: agg_merchant_daily.date_sk
+	toColumn: dim_date.date_sk
+	crossFilteringBehavior: oneDirection
+
+relationship rel_agg_merchant
+	fromColumn: agg_merchant_daily.merchant_sk
+	toColumn: dim_merchant.merchant_sk
+	crossFilteringBehavior: oneDirection

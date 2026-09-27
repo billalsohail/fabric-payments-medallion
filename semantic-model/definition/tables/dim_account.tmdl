@@ -1,0 +1,161 @@
+/// =====================================================================================
+/// dim_account — SCD2, and the modelling consequences of that
+///
+/// **This table's grain is an account *version*, not an account.** `account_id` repeats. Three
+/// things follow, and getting any of them wrong produces a model that looks fine and reports
+/// wrong numbers:
+///
+///   1. `account_id` is **not** marked `isKey` and **not** the relationship column. The
+///      relationship is on `account_sk` (see relationships.tmdl). A distinct count of accounts
+///      is therefore `DISTINCTCOUNT(dim_account[account_id])`, never a row count of this table —
+///      `[Active Accounts]` in measures.dax is written that way for exactly this reason.
+///
+///   2. Grouping a measure by `risk_band` groups by the risk band **as it was when the
+///      transaction happened**, because the fact points at a specific version. That is the
+///      correct and useful behaviour (it is the whole reason this dimension is Type 2), and it
+///      surprises people who expect current-state grouping. A report that genuinely wants
+///      current state filters `is_current = TRUE` — which is why that column is visible rather
+///      than hidden.
+///
+///   3. `valid_from` / `valid_to` are **visible**. Hiding them is the instinct, because they
+///      are plumbing. But they are the only way a report author can tell which version they are
+///      looking at, and an SCD2 dimension whose intervals are invisible is one where nobody can
+///      debug a number they disagree with. `valid_to` carries the sentinel
+///      9999-12-31 23:59:59 on the current row rather than NULL (src/lib/scd2.py), so a visual
+///      shows a real date there instead of a blank.
+///
+/// `scd_hash`, `load_batch_id` and `loaded_ts` are hidden: they are pipeline lineage, not
+/// business attributes, and they are kept in the model at all only so that a support question
+/// ("which batch loaded this row?") is answerable from the report rather than requiring warehouse
+/// access.
+/// =====================================================================================
+table dim_account
+	lineageTag: 0ee25b11-e329-566e-9d35-7e56cfa8a55b
+
+	column account_sk
+		dataType: int64
+		isHidden
+		summarizeBy: none
+		sourceColumn: account_sk
+
+	column account_id
+		dataType: string
+		summarizeBy: none
+		sourceColumn: account_id
+
+	/// Hidden, and that is the deliberate half: customers are reached through
+	/// `fact_transaction.customer_sk`, never by joining this column, because
+	/// relationships.tmdl leaves dim_account → dim_customer out on purpose. Leaving it visible
+	/// would invite a report author to build that join by hand and get the version semantics
+	/// wrong.
+	column customer_id
+		dataType: string
+		isHidden
+		summarizeBy: none
+		sourceColumn: customer_id
+
+	column sort_code
+		dataType: string
+		isHidden
+		summarizeBy: none
+		sourceColumn: sort_code
+
+	column account_number_masked
+		dataType: string
+		summarizeBy: none
+		sourceColumn: account_number_masked
+
+	column account_type
+		dataType: string
+		summarizeBy: none
+		sourceColumn: account_type
+
+	column account_status
+		dataType: string
+		summarizeBy: none
+		sourceColumn: account_status
+
+	/// The attribute that makes this dimension Type 2. See note 2.
+	column risk_band
+		dataType: string
+		summarizeBy: none
+		sourceColumn: risk_band
+
+	/// Money in minor units, so the format string divides by 100 rather than the column being
+	/// pre-divided in the warehouse. Integer minor units are exact; a decimal pound amount in
+	/// the fact would accumulate float error over a sum of millions of rows. Same reasoning
+	/// everywhere money appears in this model.
+	column credit_limit_minor
+		dataType: int64
+		formatString: \£#,0.00;(\£#,0.00);\£#,0.00
+		summarizeBy: none
+		sourceColumn: credit_limit_minor
+
+	/// The RLS column. `05_security.sql` filters on the equivalent column on the *fact* as well,
+	/// because filtering only here leaves `SELECT SUM(amount_minor) FROM fact_transaction`
+	/// unprotected. Kept visible so a user can see the scope they are in.
+	column region
+		dataType: string
+		summarizeBy: none
+		sourceColumn: region
+
+	column opened_date
+		dataType: dateTime
+		formatString: dd/mm/yyyy
+		summarizeBy: none
+		sourceColumn: opened_date
+
+	column closed_date
+		dataType: dateTime
+		formatString: dd/mm/yyyy
+		summarizeBy: none
+		sourceColumn: closed_date
+
+	column valid_from
+		dataType: dateTime
+		formatString: dd/mm/yyyy hh:nn:ss
+		summarizeBy: none
+		sourceColumn: valid_from
+
+	column valid_to
+		dataType: dateTime
+		formatString: dd/mm/yyyy hh:nn:ss
+		summarizeBy: none
+		sourceColumn: valid_to
+
+	column is_current
+		dataType: boolean
+		summarizeBy: none
+		sourceColumn: is_current
+
+	column scd_hash
+		dataType: int64
+		isHidden
+		summarizeBy: none
+		sourceColumn: scd_hash
+
+	column load_batch_id
+		dataType: string
+		isHidden
+		summarizeBy: none
+		sourceColumn: load_batch_id
+
+	column loaded_ts
+		dataType: dateTime
+		isHidden
+		formatString: dd/mm/yyyy hh:nn:ss
+		summarizeBy: none
+		sourceColumn: loaded_ts
+
+	/// Counts the *entity*, not the row. See note 1 — this is the measure that exists because
+	/// `COUNTROWS(dim_account)` would count versions and be silently too high.
+	measure 'Active Accounts' = CALCULATE(DISTINCTCOUNT(dim_account[account_id]), dim_account[is_current] = TRUE)
+		formatString: #,0
+		displayFolder: Accounts
+
+	partition dim_account = entity
+		mode: directLake
+		source
+			entityName: dim_account
+			schemaName: dbo
+			expressionSource: DatabaseQuery

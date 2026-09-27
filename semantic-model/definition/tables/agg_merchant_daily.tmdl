@@ -1,0 +1,199 @@
+/// =====================================================================================
+/// agg_merchant_daily — grain: one merchant, one day
+///
+/// Exposed as its own table, **not** as a Power BI user-defined aggregation over
+/// fact_transaction. The difference matters and the reason is `distinct_account_count`.
+///
+/// A user-defined aggregation lets the engine silently substitute this table for the detail fact
+/// whenever a query's grain permits. For the additive columns that substitution is a pure win and
+/// is always correct. For `distinct_account_count` it is not correct at any grain coarser than a
+/// day, and the engine cannot tell the difference — a distinct count is not an aggregation of
+/// distinct counts. So the substitution would be right for six columns and wrong for the seventh,
+/// silently, at query time. Making the table explicit means a report author chooses it, and the
+/// measures below are where that choice is fenced.
+///
+/// Two further hazards with an explicitly-exposed aggregate, named here because they are the ones
+/// that produce a plausible wrong number rather than an error:
+///
+///   * **It relates only to `dim_date` and `dim_merchant`.** There is no path to dim_account,
+///     dim_currency, dim_decline_reason or the channel and 3DS columns — those live at
+///     transaction grain and were aggregated away. A visual that slices an aggregate measure by
+///     `fact_transaction[channel]` does not get an error; it gets the unfiltered total repeated
+///     in every channel row. Every measure here is therefore in the `Merchant daily (agg)`
+///     display folder, kept away from the detail measures it superficially duplicates.
+///   * **It is a full rebuild, not a merge**, so it is consistent with fact_transaction at the end
+///     of a run and never mid-run. Nothing in this model can express that, which is why
+///     `tests/test_gold_recon.py` ties the two by hand after every load.
+/// =====================================================================================
+table agg_merchant_daily
+	lineageTag: 3b83a7ed-706f-54a5-b4f1-28962e51b244
+
+	column date_sk
+		dataType: int64
+		isHidden
+		summarizeBy: none
+		sourceColumn: date_sk
+
+	column merchant_sk
+		dataType: int64
+		isHidden
+		summarizeBy: none
+		sourceColumn: merchant_sk
+
+	column attempt_count
+		dataType: int64
+		formatString: #,0
+		summarizeBy: sum
+		sourceColumn: attempt_count
+
+	column approved_count
+		dataType: int64
+		formatString: #,0
+		summarizeBy: sum
+		sourceColumn: approved_count
+
+	column declined_count
+		dataType: int64
+		formatString: #,0
+		summarizeBy: sum
+		sourceColumn: declined_count
+
+	/// **The non-additive column.** `summarizeBy: none` is the first line of defence: dragged onto
+	/// a visual directly it produces nothing rather than a sum. The second line is that the only
+	/// measure over it refuses to answer above day grain.
+	///
+	/// One further precision the warehouse forces and the column name hides: the proc computes
+	/// `COUNT_BIG(DISTINCT f.account_sk)`, and `account_sk` identifies an SCD2 *version*, not an
+	/// account. So this is strictly "distinct account versions that transacted at this merchant
+	/// that day". It equals distinct accounts unless an account's version changed during that same
+	/// day, in which case it is one too high for that account. That residual is real, is bounded by
+	/// the number of same-day SCD2 changes, and is the price of the aggregate being computable with
+	/// a GROUP BY. `[Distinct Accounts]` below goes through `dim_account[account_id]` and does not
+	/// have it — which is another reason the exact measure is worth keeping alongside the fast one.
+	column distinct_account_count
+		dataType: int64
+		formatString: #,0
+		summarizeBy: none
+		sourceColumn: distinct_account_count
+
+	column attempted_amount_gbp_minor
+		dataType: int64
+		formatString: \£#,0.00;(\£#,0.00);\£#,0.00
+		summarizeBy: sum
+		sourceColumn: attempted_amount_gbp_minor
+
+	column approved_amount_gbp_minor
+		dataType: int64
+		formatString: \£#,0.00;(\£#,0.00);\£#,0.00
+		summarizeBy: sum
+		sourceColumn: approved_amount_gbp_minor
+
+	column dispute_count
+		dataType: int64
+		formatString: #,0
+		summarizeBy: sum
+		sourceColumn: dispute_count
+
+	column disputed_amount_gbp_minor
+		dataType: int64
+		formatString: \£#,0.00;(\£#,0.00);\£#,0.00
+		summarizeBy: sum
+		sourceColumn: disputed_amount_gbp_minor
+
+	column load_batch_id
+		dataType: string
+		isHidden
+		summarizeBy: none
+		sourceColumn: load_batch_id
+
+	column loaded_ts
+		dataType: dateTime
+		isHidden
+		formatString: dd/mm/yyyy hh:nn:ss
+		summarizeBy: none
+		sourceColumn: loaded_ts
+
+	/// -------------------------------------------------------------------------------------
+	/// The additive measures — the reason this table exists
+	/// -------------------------------------------------------------------------------------
+	measure 'Attempts (agg)' = SUM(agg_merchant_daily[attempt_count])
+		formatString: #,0
+		displayFolder: Merchant daily (agg)
+
+	measure 'Approved (agg)' = SUM(agg_merchant_daily[approved_count])
+		formatString: #,0
+		displayFolder: Merchant daily (agg)
+
+	measure 'Attempted Volume (agg, GBP)' = SUM(agg_merchant_daily[attempted_amount_gbp_minor])
+		formatString: \£#,0.00;(\£#,0.00);\£#,0.00
+		displayFolder: Merchant daily (agg)
+
+	/// The same DIVIDE-of-two-SUMs shape as on the detail fact, and it gives the same answer at
+	/// every grain — which is the proof that the rule in
+	/// `src/warehouse/procs/09_sp_load_agg_merchant_daily.sql` was the right one. Had the proc
+	/// stored `approval_rate` per merchant-day, this measure could only have been
+	/// `AVERAGE(approval_rate)`, and `tests/test_gold_recon.py` would not have been able to tie it
+	/// to the detail fact at any grain above a day.
+	measure 'Authorisation Rate (agg)' = DIVIDE([Approved (agg)], [Attempts (agg)])
+		formatString: 0.00%
+		displayFolder: Merchant daily (agg)
+
+	/// -------------------------------------------------------------------------------------
+	/// The non-additive one, fenced
+	/// -------------------------------------------------------------------------------------
+	/// This is the "marked as day-grain-only" the warehouse proc promises. The marking is not a
+	/// comment or a description — it is a guard that makes the wrong number unobtainable:
+	/// `HASONEVALUE(dim_date[date_sk])` is true only when the filter context is one day, and the
+	/// measure returns BLANK otherwise. A monthly card reads blank rather than reading the sum of
+	/// thirty daily distinct counts, which at this data's shape overstates by roughly an order of
+	/// magnitude.
+	///
+	/// `tests/test_gold_recon.py::test_distinct_account_count_is_not_additive_and_is_only_right_per_day`
+	/// asserts the summed value strictly exceeds the true overall distinct count, so the hazard
+	/// this guard prevents is demonstrated rather than asserted.
+	///
+	/// Returning BLANK rather than an error string is deliberate: a blank cell in a matrix is
+	/// visually obvious and composes with the rest of DAX, whereas a text value would change the
+	/// measure's data type and break any visual that expects a number. The cost is that a reader
+	/// sees "no value" without being told why — which is what the description below is for, and
+	/// why `[Distinct Accounts]` exists as the answer to the question they were actually asking.
+	measure 'Distinct Accounts (per day)' = ```
+			IF(
+			    HASONEVALUE(dim_date[date_sk]),
+			    SUM(agg_merchant_daily[distinct_account_count])
+			)
+			```
+		formatString: #,0
+		displayFolder: Merchant daily (agg)
+
+	/// The correct answer at any grain, and the reason the guard above can afford to be strict.
+	/// It goes to the detail fact and counts `dim_account[account_id]` — the **business** key, not
+	/// `fact_transaction[account_sk]`, which would count SCD2 versions and double-count any account
+	/// whose risk band moved inside the period. That distinction is invisible at day grain and
+	/// grows with the window, which makes it exactly the kind of error that survives review.
+	///
+	/// It is genuinely more expensive than the aggregate — a distinct count across the detail fact
+	/// rather than a SUM over one row per merchant-day — and that cost is the honest reason the
+	/// aggregate's stored column exists at all. Both are here so the choice is explicit.
+	///
+	/// `SUMMARIZE` rather than `CALCULATE(DISTINCTCOUNT(dim_account[account_id]), fact_transaction)`.
+	/// The CALCULATE form does work, but only via table expansion — passing a fact table as a
+	/// filter argument expands it to include the columns of every dimension it points at, which is
+	/// a real DAX rule and an obscure one. SUMMARIZE says the same thing directly: scan
+	/// fact_transaction in the current filter context, group by the related account business key,
+	/// count the groups. The many-to-one traversal from fact to dimension it relies on holds
+	/// regardless of `crossFilteringBehavior`, which is why this needs no CROSSFILTER either.
+	measure 'Distinct Accounts' = ```
+			COUNTROWS(
+			    SUMMARIZE(fact_transaction, dim_account[account_id])
+			)
+			```
+		formatString: #,0
+		displayFolder: Accounts
+
+	partition agg_merchant_daily = entity
+		mode: directLake
+		source
+			entityName: agg_merchant_daily
+			schemaName: dbo
+			expressionSource: DatabaseQuery

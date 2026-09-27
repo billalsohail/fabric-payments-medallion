@@ -1,0 +1,20 @@
+/// The single shared source expression. Every table's partition points at this rather than
+/// carrying its own connection, which is what makes the model repointable between workspaces
+/// by editing one line — and on Fabric, by a **deployment rule** or a **Variable library**
+/// entry rather than by editing anything.
+///
+/// Two parameters, both placeholders here:
+///   <sql-endpoint>  the wh_gold SQL analytics endpoint, e.g. abc123.datawarehouse.fabric.microsoft.com
+///   wh_gold         the warehouse name, stable across environments by design
+///
+/// `Sql.Database` and not `Lakehouse.Contents`, because gold is a **Warehouse**: the lakehouse
+/// SQL endpoint is read-only, which is the reason gold lives in a warehouse at all
+/// (docs/design-decisions.md #1). Direct Lake reads the warehouse's own Delta files from
+/// OneLake; this expression is the metadata path, not the data path.
+expression DatabaseQuery =
+		let
+		    Source = Sql.Database("<sql-endpoint>", "wh_gold")
+		in
+		    Source
+	lineageTag: 7ebffa8a-a4a8-5085-97fa-6dd3527a197b
+	annotation PBI_IncludeFutureArtifacts = False
