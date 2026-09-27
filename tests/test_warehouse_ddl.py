@@ -76,6 +76,27 @@ def _qualify(name: str) -> str:
     return name if "." in name else f"dbo.{name}"
 
 
+def _is_nullable(col: exp.ColumnDef) -> bool:
+    """Whether a parsed column accepts NULL.
+
+    The `allow_null` check is the whole point. sqlglot represents an **explicit** ``NULL`` as
+    ``NotNullColumnConstraint(allow_null=True)`` — the same node as ``NOT NULL``, differing only in
+    that argument. An earlier version of this file tested only the node type, and so read every
+    column in the DDL as NOT NULL. Every nullability assertion below asserts that something is *not*
+    nullable, which meant all of them passed unconditionally and none of them could ever have caught
+    the thing they exist to catch.
+
+    It was found by `src/lib/gold.py` creating the staging tables from this same parse and failing on
+    a NOT NULL violation for a column the DDL declares ``NULL``. Worth recording as the pattern it
+    is: a static check that agreed with itself for months, corrected the moment something executed
+    against it.
+    """
+    return not any(
+        isinstance(c.kind, exp.NotNullColumnConstraint) and not c.kind.args.get("allow_null")
+        for c in col.constraints
+    )
+
+
 @pytest.fixture(scope="module")
 def ddl() -> str:
     files = sorted(DDL_DIR.glob("*.sql"))
@@ -115,11 +136,7 @@ def tables(ddl: str) -> dict[str, dict[str, bool]]:
         for col in schema.expressions:
             if not isinstance(col, exp.ColumnDef):
                 continue
-            nullable = not any(
-                isinstance(c.kind, exp.NotNullColumnConstraint)
-                for c in col.constraints
-            )
-            cols[col.name.lower()] = nullable
+            cols[col.name.lower()] = _is_nullable(col)
         out[name] = cols
     return out
 
@@ -343,3 +360,56 @@ def test_security_predicate_columns_exist_on_every_filtered_table(tables, ddl):
             f"{table}.{col} is nullable; a NULL never satisfies the predicate, so those rows "
             "become invisible to every user rather than to the right ones"
         )
+
+
+# --------------------------------------------------------------------------------------
+# The nullability parse itself
+# --------------------------------------------------------------------------------------
+
+def test_explicit_null_is_distinguished_from_not_null():
+    """Pins the sqlglot quirk described in `_is_nullable`.
+
+    This is a test about a library's AST rather than about the repo's SQL, which normally would not
+    earn a place here. It earns one because getting it wrong is silent in exactly one direction: it
+    makes every "must not be nullable" assertion in this file pass, so the suite goes green while
+    checking nothing. A test that fails when sqlglot changes its representation is cheaper than
+    discovering that again.
+    """
+    tree = sqlglot.parse_one(
+        "CREATE TABLE t (a int NULL, b int NOT NULL, c int)", dialect="tsql"
+    )
+    parsed = {col.name: _is_nullable(col) for col in tree.this.expressions}
+    assert parsed == {"a": True, "b": False, "c": True}
+
+
+def test_silver_mirror_tables_declare_every_column_nullable(tables):
+    """`06_staging.sql` says it in prose; this asserts it.
+
+    A mirror mirrors silver, and silver legitimately holds NULLs — `active_to` on a current card
+    product, `resolved_date` on an open dispute, `merchant_id` on an ATM withdrawal. A NOT NULL on a
+    mirror column would reject those rows at the bridge, which on Fabric is a failed cross-database
+    INSERT with no obvious connection to the contract that permits the NULL.
+
+    `stg.load_log` is deliberately excluded, and the exclusion is the useful part: `stg` holds two
+    kinds of table. Seven are mirrors of silver, owned by the load and shaped by the source contract.
+    The eighth is the warehouse's own run log, written by the procs about themselves — a row with no
+    `proc_name` or no `status` is not a permissive mirror of anything, it is a log entry that cannot
+    be read. So the mirrors take their nullability from silver and `load_log` takes its from what a
+    log needs to be useful.
+
+    This is also the positive form of the check that was missing: every other nullability assertion
+    in this file asserts NOT NULL, so none of them could detect a parser that reported NOT NULL for
+    everything. This one fails in that case.
+    """
+    staging = {
+        t: cols for t, cols in tables.items()
+        if t.startswith("stg.") and t != "stg.load_log"
+    }
+    assert len(staging) == 7, sorted(staging)
+    offenders = {
+        f"{t}.{c}" for t, cols in staging.items() for c, nullable in cols.items() if not nullable
+    }
+    assert offenders == set(), (
+        f"staging columns declared NOT NULL: {sorted(offenders)} — staging mirrors silver, which "
+        "legitimately holds NULLs"
+    )
