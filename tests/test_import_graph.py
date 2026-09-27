@@ -250,6 +250,15 @@ def test_each_notebook_exposes_the_entry_point_the_orchestrator_calls() -> None:
             {"entity", "run_id", "until_date", "force_reload"},
         ),
         "nb_99_seed_metadata": ("main", set()),
+        # Not called by orchestration/run.py, and deliberately: maintenance is driven by the
+        # calendar rather than by ingest, so on Fabric it is a Notebook activity in its own
+        # scheduled pipeline rather than a stage of pl_master. Pinned here anyway, because the
+        # parameter list is still an activity's parameter list and still has to survive a rename.
+        "nb_03_table_maintenance": (
+            "maintain",
+            {"layers", "tables", "actions", "vacuum_retain_hours", "small_file_mib", "dry_run",
+             "run_id"},
+        ),
     }
     for stem, (func, params) in expected.items():
         path = ROOT / "src/notebooks" / f"{stem}.py"
@@ -343,12 +352,34 @@ def test_the_shim_offers_no_sql_escape_hatch() -> None:
         for n in tree.body
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and not n.name.startswith("_")
     }
-    forbidden = {n for n in public if "sql" in n.lower() or n in {"execute", "exec", "query"}}
+    forbidden = {n for n in public if n in {"sql", "sql_exec", "execute", "exec", "query", "run_sql"}}
     assert not forbidden, (
         f"src/runtime/context.py now exposes {sorted(forbidden)}. README §2 states there is no "
         f"sql_exec on the shim and says why: gold's T-SQL is executed by src/lib/gold.py and read "
         f"by tools/fabric_tsql_lint.py, and a SQL entry point on the shim would bypass both. If "
         f"this is deliberate, README §2 and docs/gold-execution.md are what need changing first."
+    )
+
+    # The invariant is about the parameter, not the name. A hatch is a shim function that runs SQL
+    # its *caller* wrote — that is what arrives with local and Fabric branches no linter reads. A
+    # closed statement the shim composes itself from a resolved table name and a number is not one:
+    # `vacuum_dry_run` exists because `VACUUM ... DRY RUN` has no Python API, and there is nothing in
+    # it for a linter to have missed. Naming alone cannot separate those two, so this checks the
+    # signature. Written this way after the name-based rule above flagged a `sql_table_ref` that was
+    # a genuine violation for a different reason — it handed a notebook a substrate-specific string —
+    # and would equally have passed a rule that only looked for `exec`.
+    hatches = {
+        n.name: sorted(a.arg for a in (*n.args.posonlyargs, *n.args.args, *n.args.kwonlyargs))
+        for n in tree.body
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and not n.name.startswith("_")
+        and {a.arg for a in (*n.args.posonlyargs, *n.args.args, *n.args.kwonlyargs)}
+        & {"sql", "statement", "stmt", "query", "ddl", "dml"}
+    }
+    assert not hatches, (
+        f"these shim functions take SQL from their caller: {hatches}. Whatever they are called, "
+        f"that is the escape hatch this test is about: the statement is written above the shim, "
+        f"branches per substrate inside it, and no linter reads either side. The shim may compose a "
+        f"closed statement of its own (see vacuum_dry_run); it may not execute one it was handed."
     )
 
 

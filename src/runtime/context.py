@@ -276,6 +276,32 @@ def table_ref(layer: Layer | str, name: str) -> str:
     return str(cfg.onelake_root / layer.value / name)
 
 
+def vacuum_dry_run(layer: Layer | str, name: str, retain_hours: float) -> int:
+    """How many files a ``VACUUM`` at this retention would delete. Deletes nothing.
+
+    An operation rather than a name resolver, and the distinction is the whole reason this function
+    exists in this file. ``VACUUM ... DRY RUN`` has no Python API — only SQL — and the two substrates
+    spell a table differently in a statement: Fabric lakehouse tables are catalog-registered, so
+    ``lh_bronze.br_disputes`` is valid SQL, while locally there is no metastore and Delta's
+    ``delta.`/abs/path``` syntax is the only way to name a table in one. The obvious shape, a public
+    helper returning that spelling, was written first and then deleted: it would hand a notebook a
+    substrate-specific string, which is precisely what ``test_table_ref_is_internal_to_the_shim``
+    forbids, and that test's own failure message prescribes this fix — *"or add the operation to the
+    shim"*.
+
+    This is also not the SQL escape hatch ``test_the_shim_offers_no_sql_escape_hatch`` guards against.
+    That test's subject is a shim function that runs SQL a **caller** supplied, arriving with local
+    and Fabric branches that no linter ever reads. This statement is closed: two numbers and a
+    resolved table name, no caller text, nothing for a linter to have missed. The actual ``OPTIMIZE``
+    and ``VACUUM`` stay on the ``DeltaTable`` handle :func:`delta_table` already returns, so the dry
+    run is the single operation SQL is needed for.
+    """
+    ref = table_ref(layer, name)
+    if not config().is_fabric:
+        ref = f"delta.`{ref}`"
+    return get_spark().sql(f"VACUUM {ref} RETAIN {retain_hours} HOURS DRY RUN").count()
+
+
 def table_exists(layer: Layer | str, name: str) -> bool:
     cfg = config()
     ref = table_ref(layer, name)
@@ -284,6 +310,27 @@ def table_exists(layer: Layer | str, name: str) -> bool:
     from delta.tables import DeltaTable
 
     return DeltaTable.isDeltaTable(get_spark(), ref)
+
+
+def list_tables(layer: Layer | str) -> list[str]:
+    """Delta tables present in a layer, sorted. ``[]`` when the layer has never been written.
+
+    Fabric reads the lakehouse's registered tables from the workspace metastore; locally it lists
+    directories holding a ``_delta_log``. **One level deep, deliberately not recursive.** The local
+    gold layer nests ``dbo/``, ``sec/`` and ``stg/`` schema directories, and a recursive walk would
+    sweep a Warehouse's tables into a caller that asked for a lakehouse layer. ``Layer`` has no
+    ``GOLD`` member for exactly that reason, and this function must not become the place that
+    quietly re-admits one: ``Layer("gold")`` raises, which is the intended answer.
+    """
+    layer = Layer(layer) if not isinstance(layer, Layer) else layer
+    cfg = config()
+    if cfg.is_fabric:  # pragma: no cover — requires a Fabric metastore
+        db = f"{cfg.lakehouse_prefix}{layer.value}"
+        return sorted(t.name for t in get_spark().catalog.listTables(db))
+    base = cfg.onelake_root / layer.value
+    if not base.is_dir():
+        return []
+    return sorted(p.name for p in base.iterdir() if (p / "_delta_log").is_dir())
 
 
 def read_table(layer: Layer | str, name: str):

@@ -1,7 +1,7 @@
 # %% [markdown]
 # # nb_99 — Seed the metadata control plane
 #
-# Five Delta tables in `lh_meta` that together make the pipeline **configuration-driven** rather
+# Six Delta tables in `lh_meta` that together make the pipeline **configuration-driven** rather
 # than code-driven. The test of that claim is concrete: adding an eighth source feed must be one row
 # in `meta_source_config` plus its DQ rules — no new notebook, no new pipeline, no code change.
 #
@@ -14,6 +14,7 @@
 # | `meta_watermark` | **operational state** | created if absent, otherwise preserved |
 # | `meta_dq_results` | operational history | created if absent, otherwise preserved |
 # | `meta_run_log` | operational history | created if absent, otherwise preserved |
+# | `meta_maintenance_log` | operational history | created if absent, otherwise preserved |
 #
 # Reseeding must never silently reset a watermark — that would turn a config change into a full
 # reload of every feed. `--reset true` does it explicitly, and says so in the log.
@@ -29,6 +30,7 @@ import logging
 
 from pyspark.sql.types import (
     BooleanType,
+    DoubleType,
     IntegerType,
     LongType,
     StringType,
@@ -465,6 +467,46 @@ RUN_LOG_SCHEMA = StructType([
     StructField("error_message", StringType(), True),
 ])
 
+MAINTENANCE_LOG_SCHEMA = StructType([
+    StructField("run_id", StringType(), False),
+    StructField("layer", StringType(), False),
+    StructField("table_name", StringType(), False),
+    StructField("action", StringType(), False),        # optimize | vacuum
+    StructField("status", StringType(), False),        # applied | dry_run | failed
+    # File and byte counts, never row counts. `nb_03_table_maintenance` writes here instead of
+    # `meta_run_log` precisely because that table's measure is rows: 48 compacted files recorded as
+    # `rows_written` would make the reconciliation in `orchestration/run.py` read a maintenance sweep
+    # as a load. Both counts are of the **live snapshot** — the files the current version references —
+    # so `VACUUM` leaves them unchanged by definition and its effect shows up in `stale_files_removed`
+    # alone. A reader who conflates the two sees a vacuum that did nothing.
+    StructField("files_before", LongType(), True),
+    StructField("files_after", LongType(), True),
+    StructField("bytes_before", LongType(), True),
+    StructField("bytes_after", LongType(), True),
+    # Delta's own OPTIMIZE metrics, not derived from the two counts above: `files_compacted` is how
+    # many files were read and replaced and `files_written` how many took their place. Kept separate
+    # from files_before/after because a concurrent writer can append during the operation, and a
+    # difference computed from the snapshots would quietly attribute that append to the compaction.
+    StructField("files_compacted", LongType(), True),
+    StructField("files_written", LongType(), True),
+    # 1 for an unpartitioned table, which Delta treats as a single implicit partition. Zero against a
+    # partitioned table with many small files is the signal the notebook's advisory is built on:
+    # OPTIMIZE bin-packs within a partition and never across, so one file per partition is already
+    # fully compacted and the fix is the partition grain in `meta_source_config`, not maintenance.
+    StructField("partitions_optimized", LongType(), True),
+    StructField("stale_files_removed", LongType(), True),
+    StructField("retain_hours", DoubleType(), True),
+    # unset | disabled | enabled. Read from the table properties and never written: V-Order is a
+    # Fabric write optimisation that OSS Delta rejects outright, so locally this column records the
+    # absence rather than a setting. `unset` on every row is the expected local state.
+    StructField("vorder", StringType(), True),
+    StructField("advisory", StringType(), True),
+    StructField("error_message", StringType(), True),
+    StructField("started_ts", TimestampType(), True),
+    StructField("ended_ts", TimestampType(), True),
+    StructField("duration_sec", DoubleType(), True),
+])
+
 # name -> (schema, partition columns)
 #
 # `meta_watermark` is partitioned by `entity` even though it holds one row per feed — seven tiny
@@ -482,6 +524,7 @@ OPERATIONAL_TABLES = {
     "meta_watermark": (WATERMARK_SCHEMA, ["entity"]),
     "meta_dq_results": (DQ_RESULTS_SCHEMA, None),
     "meta_run_log": (RUN_LOG_SCHEMA, None),
+    "meta_maintenance_log": (MAINTENANCE_LOG_SCHEMA, None),
 }
 
 

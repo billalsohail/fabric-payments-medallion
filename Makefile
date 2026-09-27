@@ -6,6 +6,8 @@
 #   seed       -> nb_99_seed_metadata notebook activity
 #   generate   -> nb_00 notebook activity (no Fabric equivalent: it stands in for the source systems)
 #   run        -> pl_master Data Factory pipeline
+#   maintain   -> nb_03_table_maintenance, on its own schedule rather than inside pl_master:
+#                 what it fixes accumulates with elapsed time, not with rows
 #   test       -> the CI gate; nothing about it is Fabric-specific, which is the point
 #   dashboard  -> Direct Lake semantic model + Power BI report
 
@@ -17,9 +19,12 @@ PYTEST_ARGS ?=
 # Passed through to orchestration/run.py: --entities, --stages, --force-reload, --until-date,
 # --parallelism. Mirrors overriding a pipeline parameter at trigger time on Fabric.
 ARGS    ?=
+# Passed through to nb_03_table_maintenance: --layers, --tables, --actions, --dry-run,
+# --vacuum-retain-hours, --small-file-mib.
+MAINTAIN_ARGS ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help setup generate seed run idempotency test test-fast lint dashboard clean reset-lake all
+.PHONY: help setup generate seed run maintain idempotency test test-fast lint dashboard clean reset-lake all
 
 help:  ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -47,6 +52,17 @@ seed: setup  ## Seed the metadata control plane (meta_source_config, meta_dq_rul
 
 run: setup  ## Run bronze, silver and gold (mirrors the pl_master Fabric pipeline)
 	$(PY) -m orchestration.run
+
+# OPTIMIZE and VACUUM over the lakehouse layers. Deliberately not a stage of `run`: compaction is
+# driven by the calendar rather than by ingest, so tying it to ingest frequency would tune it on the
+# wrong variable and make every load pay for it. Gold is absent because on Fabric it is a Warehouse
+# and manages its own storage — `Layer` has no GOLD member, so asking for it raises.
+#
+#   make maintain                              # optimize + vacuum, 168h retention (safe)
+#   make maintain MAINTAIN_ARGS='--dry-run true'   # report only, changes nothing
+#   make maintain MAINTAIN_ARGS='--vacuum-retain-hours 0'  # local demo: reclaim in the same run
+maintain: setup  ## OPTIMIZE + VACUUM the lakehouse Delta tables (MAINTAIN_ARGS=...)
+	$(PY) src/notebooks/nb_03_table_maintenance.py $(MAINTAIN_ARGS)
 
 # Proves the property the whole design rests on: a rerun of a completed load is a no-op, and a
 # forced reload replaces its batch rather than duplicating it. Two distinct mechanisms, so both
