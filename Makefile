@@ -45,12 +45,18 @@ generate: setup  ## Generate deterministic landing data (SCALE=tiny|demo)
 seed: setup  ## Seed the metadata control plane (meta_source_config, meta_dq_rules, ...)
 	$(PY) src/notebooks/nb_99_seed_metadata.py
 
-run: setup  ## Run the metadata-driven pipeline (mirrors the pl_master Fabric pipeline)
+run: setup  ## Run bronze, silver and gold (mirrors the pl_master Fabric pipeline)
 	$(PY) -m orchestration.run
 
 # Proves the property the whole design rests on: a rerun of a completed load is a no-op, and a
 # forced reload replaces its batch rather than duplicating it. Two distinct mechanisms, so both
 # are exercised — see docs/design-decisions.md.
+#
+# The assertion is over bronze, deliberately: bronze is where a double-load would be irreparable,
+# because silver and gold are both rebuilt by MERGE from whatever bronze holds. But all three stages
+# run twice here, and gold re-running unconditionally is the point rather than waste — it has no
+# watermark, so every run reloads the warehouse from silver and must arrive at the same counts. A
+# proc that was not re-runnable from the top would show up here as a row count that moved.
 idempotency: setup  ## Run the pipeline twice and assert bronze is unchanged
 	$(PY) -m orchestration.run
 	$(PY) -m orchestration.run --force-reload
