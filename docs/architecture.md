@@ -320,7 +320,7 @@ semantic-model/*.tmdl ──verified by──►  tests/test_semantic_model.py (
                       ──extracted by──►  tools/extract_dax.py         (drift fails CI)
                       ──evaluated by──►  dashboard/build_dashboard.py (the numbers are sensible)
 
-src/lib/*, notebooks  ──verified by──►  tests/  (263 tests; an isolated lake per module)
+src/lib/*, notebooks  ──verified by──►  tests/  (265 tests; an isolated lake per module)
 
 §1 of this page    ──verified by──►  tests/test_import_graph.py   (the ASTs, not the prose)
 ```

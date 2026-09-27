@@ -10,7 +10,7 @@ Fabric notebook code; it runs on a laptop.
 > ### Status
 >
 > **What runs:** landing → bronze → silver → gold, end-to-end, from a cold start, on PySpark 3.5 /
-> Delta 3.2 — the same pairing as the Fabric Spark runtime. 263 tests pass locally, including
+> Delta 3.2 — the same pairing as the Fabric Spark runtime. 265 tests pass locally, including
 > run-it-twice idempotency, SCD2 interval invariants, a reconciliation that ties every bronze row to
 > a silver row, a quarantined row or a deduplicated one, and a second reconciliation in which every
 > difference between silver and the star schema is enumerated and attributed to a named cause.
@@ -93,18 +93,34 @@ differences rather than discovered them in production.
 
 So the organising constraint is: **the transformation code must be Fabric notebook code, unmodified,
 while still running on a laptop.** That is what `src/runtime/context.py` is for. Every notebook asks
-it for `get_spark()`, `read_table(layer, name)`, `write_table(...)`, `table_ref(...)`, `sql_exec(...)`.
+it for `get_spark()`, `read_table(layer, name)`, `write_table(df, layer, name, ...)`,
+`table_exists(layer, name)`, `delta_table(layer, name)` and `landing_path(entity, ingest_date)`.
 Locally those resolve to a configured `SparkSession` and Delta paths under `./_onelake/`; on Fabric
 they resolve to the ambient `spark` and lakehouse table names. Nothing above the shim knows which
 substrate it is on.
+
+Two things the shim deliberately does **not** offer are worth naming, because the absence is the
+design rather than an omission:
+
+- **There is no `sql_exec(...)`.** A notebook able to reach a SQL endpoint through the shim would
+  put gold's T-SQL behind the same interface as bronze's DataFrame code, and
+  [`docs/gold-execution.md`](docs/gold-execution.md) exists to keep those apart: they carry
+  different kinds of evidence. The T-SQL is run by a separate harness, `src/lib/gold.py`, which
+  transpiles it to Spark SQL and is careful to call itself a harness rather than a second
+  implementation.
+- **No caller is ever handed a path or a table name.** `table_ref(layer, name)` is what resolves
+  `./_onelake/silver/dim_account` against `lh_silver.dim_account`, and it is internal — the four
+  table functions above call it; nothing above the shim does. A notebook cannot hard-code a location
+  because it is never given one.
 
 Three consequences of that constraint are worth naming, because they are the things a reviewer
 should look for:
 
 - **No notebook imports another notebook.** On Fabric a notebook can only `%run` another, not
   `import` it, so anything two notebooks share has to be library code attached to the Spark
-  Environment. That is why `load_config` lives in `src/lib/config.py` and is re-exported by both
-  `nb_01` and `nb_02` rather than defined in one and imported by the other. It looks like an odd
+  Environment. That is why `load_source_config` lives in `src/lib/config.py` and both `nb_01` and
+  `nb_02` bind it to a module-level `load_config` of their own, rather than one defining it and the
+  other importing it. It looks like an odd
   indirection until you know the platform rule it protects.
 - **Spark and Delta are pinned to 3.5 / 3.2** because that is the Fabric runtime pairing. Version
   parity with the deployment target is a choice, not a coincidence.
@@ -147,7 +163,7 @@ make generate SCALE=tiny    # deterministic landing files under ./_onelake/files
 make seed                   # the metadata control plane: config, DQ rules, watermarks
 make run                    # bronze, silver, gold — driven entirely by meta_source_config
 make run                    # run it again — this is the interesting one
-make test                   # 263 tests
+make test                   # 265 tests
 ```
 
 The second `make run` is the point. It should do almost nothing, and say so:
@@ -334,7 +350,7 @@ rather than emitting a zero-width row that no point-in-time join could ever retu
 
 ## 7. What the tests actually prove
 
-`make test` — 263 tests. The ones that matter:
+`make test` — 265 tests. The ones that matter:
 
 | Claim | Test |
 |---|---|
@@ -371,6 +387,7 @@ rather than emitting a zero-width row that no point-in-time join could ever retu
 | `measures.dax` has not drifted from the TMDL it is generated from | `make lint` (`tools/extract_dax.py --check`) |
 | Every import in the repo points one way, and the shim depends on nothing above it | `test_import_graph.py` |
 | The parameters the orchestrator passes are parameters the notebooks declare | `test_the_orchestrator_passes_parameters_the_notebooks_actually_have` |
+| The shim has no SQL escape hatch, and hands no caller a path or a table name | `test_import_graph.py` |
 | A money measure divides by 100 exactly when it sums a minor-units column, and a `_minor` column is never formatted as money | `test_a_measure_sums_minor_units_exactly_when_it_divides_by_100`, `test_every_minor_column_is_formatted_as_an_integer` |
 | The average approved payment is a plausible figure in pounds, not a figure 100x too large | `test_dashboard_average_approved_value_is_in_pounds_not_pence` |
 | Two measures agree with a third SQL path that shares no expression with the dashboard's | `test_dashboard_authorisation_rate_agrees_with_an_independent_count` |
@@ -485,7 +502,7 @@ semantic-model/measures.dax   Generated from the TMDL by tools/extract_dax.py. A
 tools/tmdl.py                 The TMDL reader the model's tests are built on, plus the lineage-tag
                               derivation.
 
-tests/                        263 tests. conftest.py builds an isolated lake per module.
+tests/                        265 tests. conftest.py builds an isolated lake per module.
 tests/test_import_graph.py    The one test whose subject is a document: it enforces the import
                               graph docs/architecture.md §1 describes.
 ```

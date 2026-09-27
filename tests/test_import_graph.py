@@ -320,3 +320,67 @@ def test_the_orchestrator_passes_parameters_the_notebooks_actually_have() -> Non
             f"which does not declare it. On Fabric this is a Notebook activity parameter that the "
             f"notebook ignores, and the run succeeds with the default."
         )
+
+
+def test_the_shim_offers_no_sql_escape_hatch() -> None:
+    """The shim's surface is narrow on purpose, and the narrowness is a claim in README §2.
+
+    `docs/gold-execution.md` keeps two claims apart: that the logic is right (execution) and that the
+    T-SQL would run on Fabric (static analysis). A `sql_exec()` on the shim would collapse them, by
+    putting gold's T-SQL behind the same interface as bronze's DataFrame code and inviting a notebook
+    to run SQL that no linter ever sees. The T-SQL is executed by `src/lib/gold.py` instead, which is
+    above the shim, is a harness rather than a second implementation, and is read independently by
+    `tools/fabric_tsql_lint.py`.
+
+    `spark.sql(...)` inside a notebook is not what this forbids and is not reachable from here; what
+    is forbidden is the shim growing a substrate-switching SQL entry point, because that is the one
+    that would arrive with local and Fabric branches and no linter on either.
+    """
+    path = ROOT / "src/runtime/context.py"
+    tree = ast.parse(path.read_text(), filename=str(path))
+    public = {
+        n.name
+        for n in tree.body
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and not n.name.startswith("_")
+    }
+    forbidden = {n for n in public if "sql" in n.lower() or n in {"execute", "exec", "query"}}
+    assert not forbidden, (
+        f"src/runtime/context.py now exposes {sorted(forbidden)}. README §2 states there is no "
+        f"sql_exec on the shim and says why: gold's T-SQL is executed by src/lib/gold.py and read "
+        f"by tools/fabric_tsql_lint.py, and a SQL entry point on the shim would bypass both. If "
+        f"this is deliberate, README §2 and docs/gold-execution.md are what need changing first."
+    )
+
+
+def test_table_ref_is_internal_to_the_shim() -> None:
+    """Nothing above the shim is handed a path or a table name, so nothing above it can pin one.
+
+    `table_ref` is the single function that resolves `./_onelake/silver/dim_account` against
+    `lh_silver.dim_account`. The four table functions call it; a caller that called it directly would
+    hold a substrate-specific string, and the next edit to that caller would be the one that hard-
+    codes a location. This is asserted rather than left to review because the failure mode is a
+    string that looks harmless locally and is wrong on Fabric.
+    """
+    offenders: dict[str, list[int]] = {}
+    for path in ALL_MODULES:
+        rel = path.relative_to(ROOT).as_posix()
+        if rel.startswith("src/runtime/"):
+            continue
+        tree = ast.parse(path.read_text(), filename=str(path))
+        hits = [
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and (
+                (isinstance(node.func, ast.Name) and node.func.id == "table_ref")
+                or (isinstance(node.func, ast.Attribute) and node.func.attr == "table_ref")
+            )
+        ]
+        if hits:
+            offenders[rel] = hits
+    assert not offenders, (
+        f"these call table_ref from outside the shim: {offenders}. The caller now holds a "
+        f"substrate-specific path or table name, which is the thing src/runtime/context.py exists "
+        f"to keep out of the transformation code. Use read_table / write_table / table_exists / "
+        f"delta_table, or add the operation to the shim."
+    )
