@@ -245,3 +245,105 @@ def test_duplicate_transactions_are_removed_and_counted(loaded):
     table = read_table(Layer.SILVER, "fact_transaction")
     dupes = table.groupBy("transaction_id").count().filter("count > 1")
     assert dupes.count() == 0, dupes.take(5)
+
+
+# --------------------------------------------------------------------------------------
+# The negative test: a gate that cannot be shown to fail is not a gate
+# --------------------------------------------------------------------------------------
+
+@pytest.mark.uses_isolated_lake
+def test_an_error_severity_rule_fails_the_run_and_records_why(tmp_path_factory):
+    """The test the whole DQ layer answers to, and the one that is easy to leave unwritten.
+
+    A framework that evaluates every rule, quarantines every bad row, writes a tidy
+    `meta_dq_results` — and then returns success anyway — is indistinguishable from a working one on
+    green data. Every other DQ test in this suite would still pass. So this one takes a rule that is
+    `warn` in the shipped control plane, flips it to `error`, and asserts four separate things about
+    the failure, because "it raised" is the least interesting of them:
+
+    * the exception is a `DQFailure` naming the rule (not a `Py4JJavaError` from a later write),
+    * the silver watermark did **not** advance, so a retry re-reads the same window,
+    * `meta_run_log` holds a `failed` row for the step, so the 3am reader sees it,
+    * the offending rows are in `q_transactions`, tagged with the rule that caught them.
+
+    The watermark assertion is the one that would catch the worst version of this bug. A gate that
+    raises *after* the watermark has moved has not protected anything: the run is red, the data is
+    incomplete, and the next run skips the window that was never processed. `nb_02` advances the
+    watermark once, after the batch loop, precisely so that cannot happen.
+
+    Own lake root, not the module fixture: this mutates `meta_dq_rules`, and a mutated control plane
+    leaking into the other tests would make their results meaningless in a way that is very hard to
+    see from a failure message.
+    """
+    from src.lib import watermark
+    from src.notebooks import nb_01_bronze_ingest as nb01
+    from src.notebooks import nb_02_silver_transform as nb02
+    from src.notebooks import nb_99_seed_metadata as nb99
+    from src.runtime.context import get_spark, write_table
+    from tests.conftest import point_at
+
+    rule_id = "transactions.amount_minor.range"
+    point_at(tmp_path_factory.mktemp("lake_dqfail"))
+    nb99.main()
+
+    # Escalate one rule, in the control plane, exactly as an operator would — not by monkeypatching
+    # `dq`. Patching the engine would test the patch; this tests the path a real change takes.
+    rules = read_table(Layer.META, dq.RULES_TABLE)
+    escalated = rules.withColumn(
+        "severity",
+        F.when(F.col("rule_id") == rule_id, F.lit("error")).otherwise(F.col("severity")),
+    )
+    # Collected first: overwriting a Delta table from a plan that reads it is undefined behaviour.
+    write_table(
+        get_spark().createDataFrame(escalated.collect(), rules.schema),
+        Layer.META, dq.RULES_TABLE, mode="overwrite",
+    )
+    assert [r.severity for r in dq.load_rules("transactions") if r.rule_id == rule_id] == ["error"], (
+        "the control-plane edit did not take, so the rest of this test proves nothing"
+    )
+
+    # `merchants` first because `transactions` carries a `referential` rule against `dim_merchant`.
+    # Without it that rule is unevaluable, and a test whose subject is "which rule fired" must not
+    # run against a half-built silver.
+    for entity in ("merchants", "transactions"):
+        assert nb01.ingest(entity=entity, run_id="dq-fail")["status"] == "succeeded"
+    assert nb02.transform(entity="merchants", run_id="dq-fail")["status"] == "succeeded"
+
+    with pytest.raises(dq.DQFailure, match=rule_id):
+        nb02.transform(entity="transactions", run_id="dq-fail")
+
+    # 1. The watermark did not move, so the window is still owed.
+    assert watermark.get("transactions", layer=watermark.SILVER) is None, (
+        "silver watermark advanced despite a failed gate — the next run would skip this window"
+    )
+
+    # 2. The run log explains it. Asserted as a non-empty set of failed steps rather than a count:
+    #    `transactions` loads in several batches, so an earlier batch may legitimately have logged
+    #    `succeeded` before a later one breached.
+    log = read_table(Layer.META, "meta_run_log").filter(
+        (F.col("run_id") == "dq-fail") & (F.col("entity") == "transactions")
+        & (F.col("layer") == "silver") & (F.col("status") == "failed")
+    )
+    assert log.count() > 0, "the failed step left no row in meta_run_log"
+    assert all("DQFailure" in r["error_message"] for r in log.select("error_message").collect())
+
+    # 3. `meta_dq_results` records the verdict, at the severity that produced it.
+    results = read_table(Layer.META, dq.RESULTS_TABLE).filter(
+        (F.col("rule_id") == rule_id) & (F.col("severity") == "error")
+    )
+    assert results.count() > 0, "the breaching rule wrote no result row"
+    assert {r["outcome"] for r in results.select("outcome").collect()} == {"failed_run"}
+    assert results.filter(F.col("rows_failed") <= 0).count() == 0
+
+    # 4. The rows themselves are recoverable, tagged with what caught them. Severity decides whether
+    #    the run fails; it never decides whether the row is captured.
+    quarantined = read_table(Layer.QUARANTINE, f"{dq.QUARANTINE_PREFIX}transactions").filter(
+        F.array_contains(F.col(dq.RULE_IDS_COL), rule_id)
+    )
+    assert quarantined.count() > 0, (
+        "no row is in quarantine for the rule that failed the run — the gate rejected a batch "
+        "without keeping the evidence"
+    )
+    assert quarantined.filter(F.col("amount_minor").cast("long") >= 1).count() == 0, (
+        "a row that satisfies the rule was quarantined by it"
+    )
