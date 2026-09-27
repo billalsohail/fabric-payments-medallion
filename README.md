@@ -418,7 +418,8 @@ Honest, because the alternative is worse. Three days were budgeted; this is the 
 | Semantic model (TMDL) | **Done** — 10 tables, 14 relationships, 36 measures, 23 tests tying it to the warehouse DDL; **never loaded by Fabric or any DAX engine** ([`semantic-model/README.md`](semantic-model/README.md)) |
 | `semantic-model/measures.dax` | **Done and generated** from the TMDL by `tools/extract_dax.py`; `make lint` fails on drift |
 | Static dashboard (`dashboard/`) | **Done** — `make dashboard` reads the warehouse and emits a self-contained two-page HTML file covering 34 of the 36 measures. Not a Power BI report and not a substitute for one; it exists so the measures produce *numbers*, and the first number it produced was wrong by 100× ([`dashboard/build_dashboard.py`](dashboard/build_dashboard.py)) |
-| `fabric/` deployment artefacts + runbook | Not written; will be labelled UNVALIDATED in every file |
+| [`docs/fabric-deployment.md`](docs/fabric-deployment.md) | **Done** — item inventory, workspace layout, the dev→prod pipeline with its deployment rules, and a first-two-hours runbook that opens with the two questions no off-tenant check can answer. Every platform claim cites the Learn page it came from; §9 lists what would falsify it, starting with an open question the docs did not settle |
+| `fabric/` deployment artefacts (`.platform` descriptors, `deploy.py`) | Not written; will be labelled UNVALIDATED in every file |
 | [`docs/fabric-tsql-subset.md`](docs/fabric-tsql-subset.md) | **Done** — the rules, the Learn pages they came from, the four corrections those pages forced, and what the linter cannot tell you |
 | [`docs/design-decisions.md`](docs/design-decisions.md) | **Done** — fourteen decisions, the last four made *by* the code rather than before it, each with the cost it carries |
 | `docs/architecture.md`, `databricks-to-fabric.md`, `cost-and-capacity.md` | Not written |

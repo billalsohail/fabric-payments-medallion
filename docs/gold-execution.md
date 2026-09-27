@@ -13,7 +13,8 @@ is entitled to believe about the SQL in `src/warehouse/`.
 | "This T-SQL would run on Fabric Warehouse" | Static analysis. `tools/fabric_tsql_lint.py` parses every `.sql` file with `sqlglot` and rejects constructs outside the documented Fabric Warehouse surface area. |
 
 Neither substitutes for the other, and conflating them is the trap. A local SQL Server will happily
-accept `IDENTITY`, enforced foreign keys and triggers — none of which Fabric Warehouse supports — so
+accept `IDENTITY(1,1)`, enforced foreign keys and triggers — none of which Fabric Warehouse accepts,
+though it does accept a bare `bigint IDENTITY`; see `docs/fabric-tsql-subset.md` — so
 "it ran locally" is evidence about the logic and *no* evidence at all about portability. The linter
 is what carries the portability claim, and it is the verification that always works, with or without
 a database.
