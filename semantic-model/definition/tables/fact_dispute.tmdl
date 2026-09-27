@@ -118,9 +118,11 @@ table fact_dispute
 		summarizeBy: none
 		sourceColumn: disputed_amount_minor
 
+	/// Minor units, so an integer format string and no £ sign — the model's £ figures are its
+	/// measures. See the minor-units note in dim_currency.tmdl.
 	column disputed_amount_gbp_minor
 		dataType: int64
-		formatString: \£#,0.00;(\£#,0.00);\£#,0.00
+		formatString: #,0
 		summarizeBy: none
 		sourceColumn: disputed_amount_gbp_minor
 
@@ -194,7 +196,14 @@ table fact_dispute
 		formatString: #,0
 		displayFolder: Disputes
 
-	measure 'Disputed Volume (GBP)' = SUM(fact_dispute[disputed_amount_gbp_minor])
+	/// Divides by 100 because it sums a `_minor` column — the same conversion, in the same
+	/// place, as the volume measures on fact_transaction.
+	measure 'Disputed Volume (GBP)' = ```
+			DIVIDE(
+			    SUM(fact_dispute[disputed_amount_gbp_minor]),
+			    100
+			)
+			```
 		formatString: \£#,0.00;(\£#,0.00);\£#,0.00
 		displayFolder: Disputes
 
@@ -281,6 +290,10 @@ table fact_dispute
 	/// The same ratio by value rather than by count, which is the one the schemes' monitoring
 	/// programmes actually threshold on for some merchant categories — and it can move in the
 	/// opposite direction to the count when disputes cluster on high-value transactions.
+	///
+	/// Both sides are pounds, so both have already been divided by 100 and the scaling
+	/// cancels: this measure is unaffected by the minor-units conversion either way. Worth
+	/// stating only because a ratio of two money measures is where a reader stops to check.
 	measure 'Chargeback Volume Rate (bps)' = ```
 			DIVIDE(
 			    [Disputed Volume (GBP)],

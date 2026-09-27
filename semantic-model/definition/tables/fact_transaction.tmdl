@@ -134,11 +134,13 @@ table fact_transaction
 		sourceColumn: amount_minor
 
 	/// The reporting-currency conversion, and the only amount column any measure sums.
-	/// GBP always has 2 minor-unit digits, so the format string's /100 is exact — see the
-	/// minor-units note in dim_currency.tmdl.
+	/// **Minor units, so it is formatted as an integer and not as money.** The £ figures in
+	/// this model are the measures below, each of which divides this column's sum by 100 —
+	/// see the minor-units note in dim_currency.tmdl for why that division has to live in
+	/// the measure and cannot live in a format string or a calculated column.
 	column amount_gbp_minor
 		dataType: int64
-		formatString: \£#,0.00;(\£#,0.00);\£#,0.00
+		formatString: #,0
 		summarizeBy: none
 		sourceColumn: amount_gbp_minor
 
@@ -328,19 +330,35 @@ table fact_transaction
 	/// intervals, which is why this model has no FX table and no rate lookup — see
 	/// `src/warehouse/ddl/02_dimensions.sql`, which says `dim_fx_rate` is there because the fact
 	/// join needs it "and the semantic model does not".
-	measure 'Attempted Volume (GBP)' = SUM(fact_transaction[amount_gbp_minor])
+	///
+	/// The `DIVIDE(..., 100)` on each of these is the minor-units-to-pounds conversion, and
+	/// the measure is the only place in a Direct Lake model it can be — dim_currency.tmdl
+	/// argues that at length. `DIVIDE` rather than `/` for the reason in this file's header:
+	/// the rule is blanket, and `tests/test_semantic_model.py` enforces it on every measure.
+	/// A literal 100 rather than a lookup because the reporting currency is GBP and GBP has
+	/// two minor-unit digits; a model with two reporting currencies would need the lookup,
+	/// and would be a different model.
+	measure 'Attempted Volume (GBP)' = DIVIDE(SUM(fact_transaction[amount_gbp_minor]), 100)
 		formatString: \£#,0.00;(\£#,0.00);\£#,0.00
 		displayFolder: Volume
 
 	measure 'Approved Volume (GBP)' = ```
-			CALCULATE(
-			    SUM(fact_transaction[amount_gbp_minor]),
-			    fact_transaction[is_approved] = 1
+			DIVIDE(
+			    CALCULATE(
+			        SUM(fact_transaction[amount_gbp_minor]),
+			        fact_transaction[is_approved] = 1
+			    ),
+			    100
 			)
 			```
 		formatString: \£#,0.00;(\£#,0.00);\£#,0.00
 		displayFolder: Volume
 
+	/// No `/ 100` here, and that is not an oversight: the numerator is already in pounds
+	/// because `[Approved Volume (GBP)]` converted it, and dividing again would be the same
+	/// class of mistake in the other direction. The rule that makes this easy to check is
+	/// that a measure divides by 100 exactly when it sums a `_minor` column directly. This
+	/// one sums nothing; it divides two measures.
 	measure 'Average Approved Value (GBP)' = DIVIDE([Approved Volume (GBP)], [Approved Transactions])
 		formatString: \£#,0.00;(\£#,0.00);\£#,0.00
 		displayFolder: Volume

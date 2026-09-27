@@ -76,15 +76,18 @@ table agg_merchant_daily
 		summarizeBy: none
 		sourceColumn: distinct_account_count
 
+	/// The three money columns here are minor units, like every money column in this model,
+	/// so they carry an integer format string and no £ sign. See dim_currency.tmdl for the
+	/// rule and for why the conversion belongs in a measure.
 	column attempted_amount_gbp_minor
 		dataType: int64
-		formatString: \£#,0.00;(\£#,0.00);\£#,0.00
+		formatString: #,0
 		summarizeBy: sum
 		sourceColumn: attempted_amount_gbp_minor
 
 	column approved_amount_gbp_minor
 		dataType: int64
-		formatString: \£#,0.00;(\£#,0.00);\£#,0.00
+		formatString: #,0
 		summarizeBy: sum
 		sourceColumn: approved_amount_gbp_minor
 
@@ -96,7 +99,7 @@ table agg_merchant_daily
 
 	column disputed_amount_gbp_minor
 		dataType: int64
-		formatString: \£#,0.00;(\£#,0.00);\£#,0.00
+		formatString: #,0
 		summarizeBy: sum
 		sourceColumn: disputed_amount_gbp_minor
 
@@ -124,7 +127,16 @@ table agg_merchant_daily
 		formatString: #,0
 		displayFolder: Merchant daily (agg)
 
-	measure 'Attempted Volume (agg, GBP)' = SUM(agg_merchant_daily[attempted_amount_gbp_minor])
+	/// Divides by 100 for the same reason and in the same shape as its detail-fact twin
+	/// `[Attempted Volume (GBP)]`, which is also what lets `tests/test_gold_recon.py` tie the
+	/// two together: had one converted and the other not, they would disagree by 100× and the
+	/// aggregate would look like a load bug rather than a formatting one.
+	measure 'Attempted Volume (agg, GBP)' = ```
+			DIVIDE(
+			    SUM(agg_merchant_daily[attempted_amount_gbp_minor]),
+			    100
+			)
+			```
 		formatString: \£#,0.00;(\£#,0.00);\£#,0.00
 		displayFolder: Merchant daily (agg)
 

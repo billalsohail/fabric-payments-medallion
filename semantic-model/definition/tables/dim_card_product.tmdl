@@ -41,9 +41,11 @@ table dim_card_product
 		summarizeBy: none
 		sourceColumn: tier
 
+	/// Minor units, so an integer format string — see dim_account[credit_limit_minor] and the
+	/// minor-units note in dim_currency.tmdl.
 	column annual_fee_minor
 		dataType: int64
-		formatString: \£#,0.00;(\£#,0.00);\£#,0.00
+		formatString: #,0
 		summarizeBy: none
 		sourceColumn: annual_fee_minor
 

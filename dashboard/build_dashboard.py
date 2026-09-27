@@ -19,8 +19,9 @@ two implementations of the same thing drift. Three things keep that bounded:
 
   1. **Only the additive components are duplicated.** Every SQL query here sums stored columns —
      `SUM(is_approved)`, `SUM(amount_gbp_minor)`, `COUNT(*)`. Every ratio is then formed once in
-     Python by `divide()`, which is the same `DIVIDE(SUM(a), SUM(b))` shape the TMDL requires and
-     argues for at length in `fact_transaction.tmdl`. So the duplicated part is the mechanical part,
+     Python by `divide()`, and every minor-units-to-pounds conversion once by `pounds()`, both of
+     which are the same `DIVIDE(...)` shapes the TMDL requires and argues for at length in
+     `fact_transaction.tmdl` and `dim_currency.tmdl`. So the duplicated part is the mechanical part,
      and the part where a wrong answer hides — a rate averaged instead of recomputed — is not
      duplicated at all.
   2. **Every tile names the measure it stands in for**, and `Report.tile` looks that name up in the
@@ -90,6 +91,20 @@ def divide(num: float | None, den: float | None) -> float | None:
     return num / den
 
 
+def pounds(minor: float | None) -> float | None:
+    """`DIVIDE(SUM(<something>_minor), 100)` — minor units to pounds, as the measures do it.
+
+    Every money measure that sums a `_minor` column divides by 100, because the warehouse stores
+    integer minor units and a DAX format string cannot scale. `semantic-model/definition/tables/
+    dim_currency.tmdl` argues that at length; this is the stand-in for it, and it is a named
+    function rather than a `/ 100` at each call site so that the conversion is one thing that can
+    be found, checked against the measures, and counted.
+
+    Applying it here rather than inside `_format` is the whole point — see `_format`.
+    """
+    return divide(minor, 100)
+
+
 # -------------------------------------------------------------------------------------
 # Formatting, driven by the model's own format strings
 # -------------------------------------------------------------------------------------
@@ -108,12 +123,18 @@ _SIGNED = "+0.00;-0.00;0.00"
 def _format(value: float | None, format_string: str) -> str:
     """Render `value` as the TMDL's `format_string` would.
 
-    **This applies no scaling of its own, deliberately.** It would be easy to divide the money
-    figures by 100 here on the grounds that the warehouse stores minor units — and that would make
-    this page look right while the model stayed wrong, which is the one outcome that would make
-    building it pointless. A format string formats; if a conversion is needed it belongs in the
-    measure, where the real report would also see it. So this function is a faithful reading of the
-    format string and nothing more, and where the model is wrong the page shows it.
+    **This applies no scaling of its own, deliberately**, and that decision is the reason this
+    file was worth building. A format string formats; it cannot scale by 100. So when the warehouse
+    stores minor units, the conversion has to be in the measure, and the tempting shortcut — divide
+    by 100 here, where it is one character — would have made this page look right while the model
+    stayed wrong, which is the one outcome that would have made building it pointless.
+
+    That is not hypothetical. On its first run this function printed an average approved card
+    payment of £6,379.00, because every money measure summed a minor-unit column under a `\£#,0.00`
+    format string and a comment two files away claimed the format string divided by 100. It does
+    not. The measures now divide, `pounds()` above is this file's stand-in for that division, and
+    this function remains a faithful reading of the format string and nothing more — so the next
+    time the model and the numbers disagree, the page will say so again.
     """
     if value is None:
         return "—"
@@ -532,9 +553,12 @@ def _page_exec(r: Report, g: Gold) -> str:
         r.tile("Approved Transactions", approved),
         r.tile("Declined Transactions", t["declined"]),
         r.tile("Reversed Transactions", t["reversed"]),
-        r.tile("Attempted Volume (GBP)", t["attempted_gbp_minor"]),
-        r.tile("Approved Volume (GBP)", t["approved_gbp_minor"]),
-        r.tile("Average Approved Value (GBP)", divide(t["approved_gbp_minor"], approved)),
+        r.tile("Attempted Volume (GBP)", pounds(t["attempted_gbp_minor"])),
+        r.tile("Approved Volume (GBP)", pounds(t["approved_gbp_minor"])),
+        # `DIVIDE([Approved Volume (GBP)], [Approved Transactions])` — the numerator is the measure
+        # above, so the conversion is already in it and must not be applied twice. The same shape as
+        # the DAX, for the same reason.
+        r.tile("Average Approved Value (GBP)", divide(pounds(t["approved_gbp_minor"]), approved)),
     )
     rates = _tiles(
         r.tile("Authorisation Rate", divide(approved, attempts)),
@@ -552,10 +576,13 @@ def _page_exec(r: Report, g: Gold) -> str:
         r.tile("Disputes Won", d["won"]),
         r.tile("Disputes Lost", d["lost"]),
         r.tile("Dispute Win Rate", divide(d["won"], (d["won"] or 0) + (d["lost"] or 0))),
-        r.tile("Disputed Volume (GBP)", d["disputed_gbp_minor"]),
+        r.tile("Disputed Volume (GBP)", pounds(d["disputed_gbp_minor"])),
         r.tile("Chargeback Rate (bps)", _bps(d["raised"], attempts)),
+        # Both sides in pounds, as in the DAX. The 1/100 cancels and the bps figure is identical
+        # either way — which is worth doing rather than skipping, because a reader comparing this
+        # line to the measure should find the same expression, not a simplified one.
         r.tile("Chargeback Volume Rate (bps)",
-               _bps(d["disputed_gbp_minor"], t["attempted_gbp_minor"])),
+               _bps(pounds(d["disputed_gbp_minor"]), pounds(t["attempted_gbp_minor"]))),
         r.tile("Disputes Resolved", d["resolved"],
                "Excludes open disputes. The second date role this measure uses is invisible on a "
                "page with no date filter."),
@@ -582,7 +609,7 @@ def _page_exec(r: Report, g: Gold) -> str:
     agg_tiles = _tiles(
         r.tile("Attempts (agg)", agg["attempts"]),
         r.tile("Approved (agg)", agg["approved"]),
-        r.tile("Attempted Volume (agg, GBP)", agg["attempted_gbp_minor"]),
+        r.tile("Attempted Volume (agg, GBP)", pounds(agg["attempted_gbp_minor"])),
         r.tile("Authorisation Rate (agg)", divide(agg["approved"], agg["attempts"])),
     )
     agg_note = (
@@ -599,8 +626,8 @@ def _page_exec(r: Report, g: Gold) -> str:
     # `year_month` is stored as an int (202401); the chart labels it as text.
     months = [str(m["ym"]) for m in g.monthly]
     volume_chart = _columns_svg(
-        months, [float(m["attempted_gbp_minor"]) for m in g.monthly],
-        "Attempted volume by month, in the same minor units the warehouse stores",
+        months, [pounds(float(m["attempted_gbp_minor"])) or 0.0 for m in g.monthly],
+        "Attempted volume by month, in GBP — [Attempted Volume (GBP)] sliced by dim_date",
     )
     rate_chart = _lines_svg(
         months,
@@ -612,12 +639,12 @@ def _page_exec(r: Report, g: Gold) -> str:
     merch_rows = [
         [m["merchant_name"], m["mcc_category"], f'{m["attempts"]:,}',
          r.value("Authorisation Rate", divide(m["approved"], m["attempts"])),
-         r.value("Attempted Volume (GBP)", m["attempted_gbp_minor"])]
+         r.value("Attempted Volume (GBP)", pounds(m["attempted_gbp_minor"]))]
         for m in g.merchants
     ]
     merchants = _bar_table(
         ["Merchant", "Category", "Attempts", "Auth rate", "Attempted volume"],
-        merch_rows, [float(m["attempted_gbp_minor"]) for m in g.merchants],
+        merch_rows, [pounds(float(m["attempted_gbp_minor"])) or 0.0 for m in g.merchants],
     )
 
     return f"""

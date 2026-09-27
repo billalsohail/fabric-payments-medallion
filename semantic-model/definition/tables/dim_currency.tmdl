@@ -8,8 +8,36 @@
 ///   * `amount_minor` is in the transaction's own currency, so summing it across currencies is
 ///     meaningless — 100 JPY and 100 GBP are not 200 of anything. No measure sums it.
 ///   * `amount_gbp_minor` is the reporting-currency conversion, and GBP has exactly 2 minor-unit
-///     digits, always. So every money measure here divides by 100 via a format string and needs
-///     no lookup.
+///     digits, always. So every money measure divides the minor-unit sum by a literal 100 —
+///     `DIVIDE(SUM(...), 100)` — and needs no lookup at all.
+///
+/// **Where that division lives is not a free choice**, and getting it wrong is silent, so it is
+/// spelled out here once for the whole model.
+///
+/// It cannot live in the format string. A DAX format string formats; the only scaling it can
+/// express is the trailing comma's thousands, and there is no /100. `\£#,0.00` applied to 12345
+/// minor units renders `£12,345.00`, not `£123.45` — the same figure, a hundred times too large,
+/// with a currency symbol in front of it making it look considered.
+///
+/// It cannot live in a calculated column either, which is the tidy answer in an Import model. This
+/// is Direct Lake: the model's columns *are* the warehouse's columns, and a calculated column would
+/// break the Direct Lake contract (`test_there_are_no_calculated_columns` holds that line).
+///
+/// So it lives in the measure, and the rule that follows is worth stating as a rule: **a `_minor`
+/// column is formatted as an integer (`#,0`), and a £ sign appears only on a measure.** Minor units
+/// are integers everywhere this model stores them — that is the whole reason the warehouse stores
+/// them, since integer pence are exact and a decimal pound column accumulates float error over a
+/// sum of millions of rows — and pounds exist only where a measure has converted them.
+///
+/// How this was found, because it is the more useful half of the story: every money measure in this
+/// model *did* carry a money format string over a minor-unit sum, and this note *did* claim the
+/// format string divided by 100. Nothing caught it. Twenty-three tests check that the model is
+/// internally consistent and consistent with the warehouse DDL, and all of them passed, because a
+/// format string that formats the wrong magnitude is consistent with everything. What caught it was
+/// `dashboard/build_dashboard.py` the first time it ran: it renders each measure through the format
+/// string the TMDL gives it and applies no scaling of its own, and it printed an average approved
+/// card payment of £6,379.00. The truth was £63.79. A test that checks a claim beats a comment that
+/// makes one, and a number you can look at beats both.
 ///
 /// The scaling that `minor_unit_digits` drives — `10^(2 - digits)`, which is what makes JPY
 /// (0 digits) convert correctly — happens **once**, in silver, before the fact is written. By

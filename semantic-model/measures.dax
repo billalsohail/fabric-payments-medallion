@@ -86,15 +86,24 @@ DEFINE
     // `src/warehouse/ddl/02_dimensions.sql`, which says `dim_fx_rate` is there because the fact
     // join needs it "and the semantic model does not".
     // [formatString: \£#,0.00;(\£#,0.00);\£#,0.00  ·  displayFolder: Volume]
-    MEASURE fact_transaction[Attempted Volume (GBP)] = SUM(fact_transaction[amount_gbp_minor])
+    MEASURE fact_transaction[Attempted Volume (GBP)] =
+        DIVIDE(SUM(fact_transaction[amount_gbp_minor]), 100)
 
     // [formatString: \£#,0.00;(\£#,0.00);\£#,0.00  ·  displayFolder: Volume]
     MEASURE fact_transaction[Approved Volume (GBP)] =
-        CALCULATE(
-            SUM(fact_transaction[amount_gbp_minor]),
-            fact_transaction[is_approved] = 1
+        DIVIDE(
+            CALCULATE(
+                SUM(fact_transaction[amount_gbp_minor]),
+                fact_transaction[is_approved] = 1
+            ),
+            100
         )
 
+    // No `/ 100` here, and that is not an oversight: the numerator is already in pounds because
+    // `[Approved Volume (GBP)]` converted it, and dividing again would be the same class of
+    // mistake in the other direction. The rule that makes this easy to check is that a measure
+    // divides by 100 exactly when it sums a `_minor` column directly. This one sums nothing; it
+    // divides two measures.
     // [formatString: \£#,0.00;(\£#,0.00);\£#,0.00  ·  displayFolder: Volume]
     MEASURE fact_transaction[Average Approved Value (GBP)] =
         DIVIDE([Approved Volume (GBP)], [Approved Transactions])
@@ -173,8 +182,14 @@ DEFINE
     // [formatString: #,0  ·  displayFolder: Disputes]
     MEASURE fact_dispute[Disputes Lost] = SUM(fact_dispute[is_lost])
 
+    // Divides by 100 because it sums a `_minor` column — the same conversion, in the same
+    // place, as the volume measures on fact_transaction.
     // [formatString: \£#,0.00;(\£#,0.00);\£#,0.00  ·  displayFolder: Disputes]
-    MEASURE fact_dispute[Disputed Volume (GBP)] = SUM(fact_dispute[disputed_amount_gbp_minor])
+    MEASURE fact_dispute[Disputed Volume (GBP)] =
+        DIVIDE(
+            SUM(fact_dispute[disputed_amount_gbp_minor]),
+            100
+        )
 
     // Won over *decided*, not won over raised. An open dispute has not been lost, and putting
     // it in the denominator reports a win rate that climbs for a month afterwards purely as
@@ -250,9 +265,16 @@ DEFINE
     // [formatString: #,0  ·  displayFolder: Merchant daily (agg)]
     MEASURE agg_merchant_daily[Approved (agg)] = SUM(agg_merchant_daily[approved_count])
 
+    // Divides by 100 for the same reason and in the same shape as its detail-fact twin
+    // `[Attempted Volume (GBP)]`, which is also what lets `tests/test_gold_recon.py` tie the
+    // two together: had one converted and the other not, they would disagree by 100× and the
+    // aggregate would look like a load bug rather than a formatting one.
     // [formatString: \£#,0.00;(\£#,0.00);\£#,0.00  ·  displayFolder: Merchant daily (agg)]
     MEASURE agg_merchant_daily[Attempted Volume (agg, GBP)] =
-        SUM(agg_merchant_daily[attempted_amount_gbp_minor])
+        DIVIDE(
+            SUM(agg_merchant_daily[attempted_amount_gbp_minor]),
+            100
+        )
 
     // The same DIVIDE-of-two-SUMs shape as on the detail fact, and it gives the same answer at
     // every grain — which is the proof that the rule in

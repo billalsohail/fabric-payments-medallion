@@ -81,13 +81,15 @@ table dim_account
 		summarizeBy: none
 		sourceColumn: risk_band
 
-	/// Money in minor units, so the format string divides by 100 rather than the column being
-	/// pre-divided in the warehouse. Integer minor units are exact; a decimal pound amount in
-	/// the fact would accumulate float error over a sum of millions of rows. Same reasoning
-	/// everywhere money appears in this model.
+	/// Money in minor units rather than pre-divided pounds in the warehouse, because integer
+	/// minor units are exact and a decimal pound column accumulates float error over a sum of
+	/// millions of rows. Same reasoning everywhere money appears in this model — and so is the
+	/// consequence: an integer format string, no £ sign, and no measure over it. Nothing in
+	/// this model reports a credit limit yet; when something does, it will be a measure that
+	/// divides by 100, per the minor-units note in dim_currency.tmdl.
 	column credit_limit_minor
 		dataType: int64
-		formatString: \£#,0.00;(\£#,0.00);\£#,0.00
+		formatString: #,0
 		summarizeBy: none
 		sourceColumn: credit_limit_minor
 
