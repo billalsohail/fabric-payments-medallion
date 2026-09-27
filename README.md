@@ -10,7 +10,7 @@ Fabric notebook code; it runs on a laptop.
 > ### Status
 >
 > **What runs:** landing → bronze → silver → gold, end-to-end, from a cold start, on PySpark 3.5 /
-> Delta 3.2 — the same pairing as the Fabric Spark runtime. 290 tests pass locally, including
+> Delta 3.2 — the same pairing as the Fabric Spark runtime. 312 tests pass locally, including
 > run-it-twice idempotency, SCD2 interval invariants, a reconciliation that ties every bronze row to
 > a silver row, a quarantined row or a deduplicated one, and a second reconciliation in which every
 > difference between silver and the star schema is enumerated and attributed to a named cause.
@@ -163,8 +163,9 @@ make generate SCALE=tiny    # deterministic landing files under ./_onelake/files
 make seed                   # the metadata control plane: config, DQ rules, watermarks
 make run                    # bronze, silver, gold — driven entirely by meta_source_config
 make run                    # run it again — this is the interesting one
-make test                   # 290 tests
+make test                   # 312 tests
 make maintain               # OPTIMIZE + VACUUM the Delta layers, on its own schedule
+make fabric-build           # render fabric/items/ into the git-integration layout (UNVALIDATED)
 ```
 
 The second `make run` is the point. It should do almost nothing, and say so:
@@ -352,7 +353,7 @@ rather than emitting a zero-width row that no point-in-time join could ever retu
 
 ## 7. What the tests actually prove
 
-`make test` — 290 tests. The ones that matter:
+`make test` — 312 tests. The ones that matter:
 
 | Claim | Test |
 |---|---|
@@ -397,6 +398,9 @@ rather than emitting a zero-width row that no point-in-time join could ever retu
 | A money measure divides by 100 exactly when it sums a minor-units column, and a `_minor` column is never formatted as money | `test_a_measure_sums_minor_units_exactly_when_it_divides_by_100`, `test_every_minor_column_is_formatted_as_an_integer` |
 | The average approved payment is a plausible figure in pounds, not a figure 100x too large | `test_dashboard_average_approved_value_is_in_pounds_not_pence` |
 | Two measures agree with a third SQL path that shares no expression with the dashboard's | `test_dashboard_authorisation_rate_agrees_with_an_independent_count` |
+| The three deliberate absences in `fabric/` stay absent | `test_the_warehouse_is_deliberately_not_an_item`, `test_the_pipeline_is_an_item_without_a_body`, `test_there_is_no_parameter_yml` |
+| The variable library is exactly the table `docs/fabric-deployment.md` §6 publishes, value for value | `test_variable_defaults_are_the_dev_column_of_the_documented_table`, `test_a_value_set_overrides_only_what_actually_differs` |
+| Rendering a notebook into Fabric's cell format loses no cell and invents none | `test_the_render_round_trips_back_to_the_same_cells` |
 
 Three notes on how these are written, because they are the difference between a suite that checks
 the work and one that agrees with it:
@@ -448,7 +452,7 @@ Honest, because the alternative is worse. Three days were budgeted; this is the 
 | `semantic-model/measures.dax` | **Done and generated** from the TMDL by `tools/extract_dax.py`; `make lint` fails on drift |
 | Static dashboard (`dashboard/`) | **Done** — `make dashboard` reads the warehouse and emits a self-contained two-page HTML file covering 34 of the 36 measures. Not a Power BI report and not a substitute for one; it exists so the measures produce *numbers*, and the first number it produced was wrong by 100× ([`dashboard/build_dashboard.py`](dashboard/build_dashboard.py)) |
 | [`docs/fabric-deployment.md`](docs/fabric-deployment.md) | **Done** — item inventory, workspace layout, the dev→prod pipeline with its deployment rules, and a first-two-hours runbook that opens with the two questions no off-tenant check can answer. Every platform claim cites the Learn page it came from; §9 lists what would falsify it, starting with an open question the docs did not settle |
-| `fabric/` deployment artefacts (`.platform` descriptors, `deploy.py`) | Not written; will be labelled UNVALIDATED in every file |
+| `fabric/` deployment layer | **Done, and UNVALIDATED — nothing in it has been run against a tenant.** Twelve `.platform` descriptors plus the variable library are in git; the git-integration layout itself is *generated* into `fabric/build/` by `make fabric-build`, because a file that can be derived should not also be committed. Three absences are deliberate and enforced by tests: no `wh_gold.Warehouse` item, no hand-written `pipeline-content.json`, no `parameter.yml`. 20 tests, and one format in it that no Learn page prints ([`fabric/README.md`](fabric/README.md)) |
 | [`docs/fabric-tsql-subset.md`](docs/fabric-tsql-subset.md) | **Done** — the rules, the Learn pages they came from, the four corrections those pages forced, and what the linter cannot tell you |
 | [`docs/design-decisions.md`](docs/design-decisions.md) | **Done** — fourteen decisions, the last four made *by* the code rather than before it, each with the cost it carries |
 | [`docs/architecture.md`](docs/architecture.md) | **Done** — the structural view: the one-way dependency graph, the six seams and what each one promises, the single-owner table, what changing one thing actually costs, and "what I would add next, and why" for every cut in §10 below |
@@ -515,7 +519,14 @@ semantic-model/measures.dax   Generated from the TMDL by tools/extract_dax.py. A
 tools/tmdl.py                 The TMDL reader the model's tests are built on, plus the lineage-tag
                               derivation.
 
-tests/                        290 tests. conftest.py builds an isolated lake per module.
+fabric/items/                 Twelve .platform descriptors and the variable library — the two
+                              things here that cannot be derived from anything else in the repo.
+fabric/build_items.py         Renders those into Fabric's git-integration layout, including the
+                              notebook cell format that Learn only ever shows in a screenshot.
+fabric/deploy.py              The fabric-cicd wrapper. Never executed. --dry-run is the only mode
+                              anything in this repo has ever proven.
+
+tests/                        312 tests. conftest.py builds an isolated lake per module.
 tests/test_import_graph.py    The one test whose subject is a document: it enforces the import
                               graph docs/architecture.md §1 describes.
 ```

@@ -167,13 +167,19 @@ someone data they may not see*, would be exactly the unverifiable claim this pro
 avoid. `05_security.sql` takes the same line — its `GRANT UNMASK` statements are commented
 templates with `@bank.example` placeholders and no real principal names.
 
-**2. No `.platform` file.** Fabric git integration identifies each item with a `.platform`
-descriptor holding its type, display name and logical id. This directory has none, so it is TMDL
-that is *shaped* like a Fabric semantic model rather than a Fabric item you could sync. The
-descriptor belongs to the deployment layer, not to the model, and will live in `fabric/items/`
-alongside the lakehouse, warehouse and pipeline descriptors — labelled UNVALIDATED like everything
-else in there, because a hand-authored item descriptor that has never round-tripped through a
-tenant is exactly the kind of file worth being loud about.
+**2. No `.platform` file here — and that is now where it stopped being a gap.** Fabric git
+integration identifies each item with a `.platform` descriptor holding its type, display name and
+logical id. This directory still has none, because the descriptor belongs to the deployment layer
+rather than to the model: it lives in `fabric/items/sm_payments.SemanticModel/`, and
+`make fabric-build` assembles the two — this directory's TMDL plus that descriptor plus a generated
+`definition.pbism` — into an item shaped the way Fabric stores one. So the TMDL is no longer merely
+*shaped* like a semantic model; it is the definition half of one.
+
+What has not changed is the label. Nothing in `fabric/` has round-tripped through a tenant, and
+[`fabric/README.md`](../fabric/README.md) §6 names this item as the one it expects to need the most
+correction on first contact: `definition.pbism` is documented by a Power BI Desktop *projects* page
+that is itself marked preview, and a Desktop project and a Fabric git export are not proven here to
+be the same format.
 
 **3. No report.** No `.pbir` definition, no page layout, no visual. `dashboard/build_dashboard.py`
 reads gold directly and emits static HTML as an explicit stand-in — its job is to show the measures
