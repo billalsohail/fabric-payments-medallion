@@ -110,9 +110,13 @@ should look for:
   parity with the deployment target is a choice, not a coincidence.
 - **Gold is a Warehouse, not a lakehouse.** The lakehouse SQL endpoint on Fabric is read-only, so
   T-SQL DDL and multi-table transactional loads need a Warehouse — and a Warehouse has a
-  deliberately narrower T-SQL surface than SQL Server: no `IDENTITY`, no sequences, no *enforced*
-  keys. Surrogate keys are therefore generated with `ROW_NUMBER() OVER (...)` over the current max,
-  and the data-quality layer — not a foreign key — *is* the integrity guarantee.
+  deliberately narrower T-SQL surface than SQL Server: no sequences, no triggers, no *enforced*
+  keys. Surrogate keys are generated with `ROW_NUMBER() OVER (...)` over the current max, and the
+  data-quality layer — not a foreign key — *is* the integrity guarantee. `IDENTITY` is the
+  interesting case: Fabric **does** support it, and this repo declines to use it anyway because
+  Fabric's allocation is not guaranteed contiguous or reproducible, which a rerunnable load needs
+  ([`docs/design-decisions.md`](docs/design-decisions.md) §12). Not using a feature and not having
+  it are different claims, and `tools/fabric_tsql_lint.py` is careful to make only the second one.
 
 The second organising idea is that **an eighth feed should be a row in a table, not an edit to a
 notebook.** `nb_01_bronze_ingest.py` and `nb_02_silver_transform.py` each handle all seven feeds
