@@ -149,7 +149,12 @@ table dim_account
 
 	/// Counts the *entity*, not the row. See note 1 — this is the measure that exists because
 	/// `COUNTROWS(dim_account)` would count versions and be silently too high.
-	measure 'Active Accounts' = CALCULATE(DISTINCTCOUNT(dim_account[account_id]), dim_account[is_current] = TRUE)
+	measure 'Active Accounts' = ```
+			CALCULATE(
+			    DISTINCTCOUNT(dim_account[account_id]),
+			    dim_account[is_current] = TRUE
+			)
+			```
 		formatString: #,0
 		displayFolder: Accounts
 

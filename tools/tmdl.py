@@ -28,6 +28,7 @@ reading `_parse`.
 from __future__ import annotations
 
 import re
+import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -136,11 +137,19 @@ def _parse(lines: list[str], where: str) -> list[Block]:
                 if lines[i].strip() == _MULTILINE_FENCE:
                     i += 1
                     break
-                body.append(lines[i].strip())
+                body.append(lines[i])
                 i += 1
             else:
                 raise ValueError(f"{where}:{lineno}: unterminated ``` expression")
-            multiline = "\n".join(body)
+            # `dedent`, not `strip()` per line. The fenced body is indented to sit under its
+            # declaration, and inside that base indent the DAX carries its own structure —
+            # `VAR`/`RETURN` at one level, the `IF` arguments at another. Stripping each line
+            # discards exactly that, and `tools/extract_dax.py` has to reproduce the expression
+            # verbatim, so the parser must not be the thing that flattens it. Removing the common
+            # prefix drops the base indent and keeps everything relative to it. A line that is all
+            # whitespace is ignored when computing the prefix, which is what makes a blank line
+            # inside an expression harmless.
+            multiline = textwrap.dedent("\n".join(body)).strip("\n")
             stripped = stripped[: stripped.rindex("=") + 1].strip()
 
         while len(stack) > 1 and indent <= stack[-1][0]:

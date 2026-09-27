@@ -278,7 +278,8 @@ table fact_transaction
 	/// Rates — DIVIDE(SUM(numerator), SUM(denominator)), never stored
 	/// -------------------------------------------------------------------------------------
 	/// Correct at every grain the user can filter to, which is the property a stored rate does
-	/// not have. See the note at the top of this file.
+	/// not have. The rule and the failure it prevents are set out in the header of
+	/// `fact_transaction.tmdl`.
 	measure 'Authorisation Rate' = DIVIDE([Approved Transactions], [Attempts])
 		formatString: 0.00%
 		displayFolder: Rates
@@ -350,9 +351,9 @@ table fact_transaction
 	/// Over settled transactions only, because `settlement_lag_days` is NULL on the rest and
 	/// `AVERAGE` ignores blanks. Deliberately **not** `DIVIDE(SUM(lag), [Attempts])`, which would
 	/// divide a settled-only numerator by an all-attempts denominator and understate the lag by
-	/// whatever share is unsettled. This is the one place in this file where an average is the
-	/// right shape rather than a ratio of two sums, and the reason is that the denominator is not
-	/// a stored count.
+	/// whatever share is unsettled. It is the only measure on `fact_transaction` where an average
+	/// is the right shape rather than a ratio of two sums, and the reason is that the denominator
+	/// is not a stored count.
 	measure 'Average Settlement Lag (Days)' = AVERAGE(fact_transaction[settlement_lag_days])
 		formatString: #,0.0
 		displayFolder: Settlement
@@ -383,9 +384,17 @@ table fact_transaction
 	/// experiment, not a measure.
 	measure '3DS Approval Uplift (pp)' = ```
 			VAR With3DS =
-			    CALCULATE([Authorisation Rate], fact_transaction[channel] = "ECOM", fact_transaction[is_3ds] = TRUE)
+			    CALCULATE(
+			        [Authorisation Rate],
+			        fact_transaction[channel] = "ECOM",
+			        fact_transaction[is_3ds] = TRUE
+			    )
 			VAR Without3DS =
-			    CALCULATE([Authorisation Rate], fact_transaction[channel] = "ECOM", fact_transaction[is_3ds] = FALSE)
+			    CALCULATE(
+			        [Authorisation Rate],
+			        fact_transaction[channel] = "ECOM",
+			        fact_transaction[is_3ds] = FALSE
+			    )
 			RETURN
 			    IF(
 			        NOT ISBLANK(With3DS) && NOT ISBLANK(Without3DS),

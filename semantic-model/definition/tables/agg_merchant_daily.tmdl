@@ -166,7 +166,8 @@ table agg_merchant_daily
 		formatString: #,0
 		displayFolder: Merchant daily (agg)
 
-	/// The correct answer at any grain, and the reason the guard above can afford to be strict.
+	/// The correct answer at any grain, and the reason the guard on
+	/// `[Distinct Accounts (per day)]` can afford to be strict.
 	/// It goes to the detail fact and counts `dim_account[account_id]` — the **business** key, not
 	/// `fact_transaction[account_sk]`, which would count SCD2 versions and double-count any account
 	/// whose risk band moved inside the period. That distinction is invisible at day grain and

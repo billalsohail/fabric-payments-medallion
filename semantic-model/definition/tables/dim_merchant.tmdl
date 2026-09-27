@@ -113,7 +113,12 @@ table dim_merchant
 		summarizeBy: none
 		sourceColumn: loaded_ts
 
-	measure 'Active Merchants' = CALCULATE(DISTINCTCOUNT(dim_merchant[merchant_id]), dim_merchant[is_current] = TRUE)
+	measure 'Active Merchants' = ```
+			CALCULATE(
+			    DISTINCTCOUNT(dim_merchant[merchant_id]),
+			    dim_merchant[is_current] = TRUE
+			)
+			```
 		formatString: #,0
 		displayFolder: Merchants
 

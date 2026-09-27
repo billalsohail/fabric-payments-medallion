@@ -134,7 +134,12 @@ table dim_customer
 		summarizeBy: none
 		sourceColumn: loaded_ts
 
-	measure 'Active Customers' = CALCULATE(DISTINCTCOUNT(dim_customer[customer_id]), dim_customer[is_current] = TRUE)
+	measure 'Active Customers' = ```
+			CALCULATE(
+			    DISTINCTCOUNT(dim_customer[customer_id]),
+			    dim_customer[is_current] = TRUE
+			)
+			```
 		formatString: #,0
 		displayFolder: Customers
 
