@@ -16,5 +16,5 @@ expression DatabaseQuery =
 		    Source = Sql.Database("<sql-endpoint>", "wh_gold")
 		in
 		    Source
-	lineageTag: 7ebffa8a-a4a8-5085-97fa-6dd3527a197b
+	lineageTag: 50084575-7827-56ae-b2b1-8143db13b0ad
 	annotation PBI_IncludeFutureArtifacts = False

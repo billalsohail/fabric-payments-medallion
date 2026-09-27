@@ -8,9 +8,9 @@
 /// whenever a query's grain permits. For the additive columns that substitution is a pure win and
 /// is always correct. For `distinct_account_count` it is not correct at any grain coarser than a
 /// day, and the engine cannot tell the difference — a distinct count is not an aggregation of
-/// distinct counts. So the substitution would be right for six columns and wrong for the seventh,
-/// silently, at query time. Making the table explicit means a report author chooses it, and the
-/// measures below are where that choice is fenced.
+/// distinct counts. So the substitution would be right for the seven additive columns and wrong for
+/// the eighth, silently, at query time. Making the table explicit means a report author chooses
+/// it, and the measures below are where that choice is fenced.
 ///
 /// Two further hazards with an explicitly-exposed aggregate, named here because they are the ones
 /// that produce a plausible wrong number rather than an error:
@@ -26,7 +26,7 @@
 ///     `tests/test_gold_recon.py` ties the two by hand after every load.
 /// =====================================================================================
 table agg_merchant_daily
-	lineageTag: 3b83a7ed-706f-54a5-b4f1-28962e51b244
+	lineageTag: d7162496-e970-50ee-afee-727d3b3f82bd
 
 	column date_sk
 		dataType: int64

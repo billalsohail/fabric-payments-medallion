@@ -21,7 +21,7 @@
 /// them from the filter context, never from this column's extremes.
 /// =====================================================================================
 table dim_date
-	lineageTag: 9e1becf5-d466-5030-9fb9-5efc2047b19e
+	lineageTag: c680bf67-2595-5430-be60-d29270190761
 	dataCategory: Time
 
 	column date_sk

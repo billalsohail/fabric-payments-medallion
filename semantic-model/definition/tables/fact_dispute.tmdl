@@ -24,7 +24,7 @@
 /// Fabric it is a hand-maintained object that drifts. See docs/design-decisions.md.
 /// =====================================================================================
 table fact_dispute
-	lineageTag: 7fba4f2f-74c5-5747-9787-bcae2f1ef86f
+	lineageTag: 3a069959-4cb7-5a9e-b392-8e3f59b71104
 
 	column dispute_id
 		dataType: string

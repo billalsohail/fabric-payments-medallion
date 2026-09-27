@@ -23,7 +23,7 @@
 /// the top of it.
 /// =====================================================================================
 table fact_transaction
-	lineageTag: 9b08b7ca-4ba2-56cf-b138-34349c19d123
+	lineageTag: c6145000-14f8-58a5-829a-8fa88ec772ef
 
 	/// Degenerate dimensions. Visible, because "show me that transaction" is a real question and
 	/// the id is the only answer to it.

@@ -18,7 +18,7 @@
 /// actually asks, and it is an attribute of the reason, not of the transaction.
 /// =====================================================================================
 table dim_decline_reason
-	lineageTag: 77190fb6-efa1-5d49-a930-b09822992880
+	lineageTag: 3356c113-4e0b-575b-93db-a890d4cc741d
 
 	column decline_reason_sk
 		dataType: int64

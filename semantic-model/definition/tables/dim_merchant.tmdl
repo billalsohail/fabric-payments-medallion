@@ -15,7 +15,7 @@
 /// implicit aggregation is a convenience for exploration rather than a number to report.
 /// =====================================================================================
 table dim_merchant
-	lineageTag: 8568912f-3fd5-5548-b395-f5f6cbb99b2d
+	lineageTag: 6946c0dc-4b18-51f2-a921-88ae138e2814
 
 	column merchant_sk
 		dataType: int64

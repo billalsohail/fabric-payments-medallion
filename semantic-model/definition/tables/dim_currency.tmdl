@@ -20,7 +20,7 @@
 /// someone will ask of a report, and the answer is in this column.
 /// =====================================================================================
 table dim_currency
-	lineageTag: cb95919f-603d-550a-a9b2-fd2a308a9acd
+	lineageTag: c98af7e1-c081-5453-b8b0-f1ba7e7dfff9
 
 	column currency_sk
 		dataType: int64

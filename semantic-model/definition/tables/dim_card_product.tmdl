@@ -13,7 +13,7 @@
 /// warehouse change — `03_sp_load_dim_account.sql`'s SCD2 merge is the pattern to copy.
 /// =====================================================================================
 table dim_card_product
-	lineageTag: 2ae4e607-231e-5084-889d-d1b67b0fdf4b
+	lineageTag: 5a37d266-506f-59e7-b02f-67975a192e9c
 
 	column card_product_sk
 		dataType: int64

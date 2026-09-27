@@ -441,9 +441,10 @@ def test_the_model_references_exactly_the_table_files_on_disk(model):
 
 def test_every_lineage_tag_is_unique(model):
     """Lineage tags are how Fabric tracks an object across renames, so two objects sharing one is a
-    model with an ambiguous identity. These were generated deterministically from the object's name
-    — see `semantic-model/README.md` — which makes a collision unlikely but also makes it the kind
-    of mistake a copy-pasted table file would produce.
+    model with an ambiguous identity. `test_every_lineage_tag_is_derived_from_its_object_path` makes
+    a collision arithmetically impossible for the tags that are there; this test is what catches the
+    case that one is *not* there — a copy-pasted table file whose tag was never edited fails here
+    with the pair named, which is a clearer failure than a mismatched derivation.
     """
     seen: dict[str, str] = {}
     duplicates = []
@@ -463,6 +464,28 @@ def test_every_lineage_tag_is_unique(model):
         walk(relationship, f"relationship {relationship.name}")
     assert seen, "no lineageTags were parsed at all"
     assert not duplicates, f"lineageTags used more than once: {duplicates}"
+
+
+def test_every_lineage_tag_is_derived_from_its_object_path(model):
+    """The tags are not random: each is `uuid5(tools.tmdl.LINEAGE_NAMESPACE, path)` where `path` is
+    the object's location in the model — `tables/fact_transaction`, `expressions/DatabaseQuery`. The
+    recipe is documented in `semantic-model/README.md` and implemented in `tools.tmdl.lineage_tag`.
+
+    Deriving them rather than minting them is what this test buys. Power BI Desktop writes random
+    UUIDs, which is fine when a tool owns the file; this model is hand-authored, where the obvious
+    way to add a table is to copy an existing file, and the obvious thing to forget is the tag. A
+    forgotten tag is not a syntax error and Fabric will accept it — it just means two objects share
+    one identity. Here it is a failing test that names the file and prints the tag it should have.
+    """
+    expected = {f"tables/{name}": block for name, block in model.tables.items()}
+    expected |= {f"expressions/{e.name}": e for e in model.expressions}
+
+    wrong = {
+        path: {"declared": block.props.get("lineageTag"), "expected": tmdl.lineage_tag(path)}
+        for path, block in sorted(expected.items())
+        if block.props.get("lineageTag") != tmdl.lineage_tag(path)
+    }
+    assert not wrong, wrong
 
 
 def test_every_relationship_joins_surrogate_keys(model):

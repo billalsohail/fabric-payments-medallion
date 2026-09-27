@@ -30,7 +30,7 @@
 /// access.
 /// =====================================================================================
 table dim_account
-	lineageTag: 0ee25b11-e329-566e-9d35-7e56cfa8a55b
+	lineageTag: 82c31914-568a-5d4d-bdf8-d5ff3551059a
 
 	column account_sk
 		dataType: int64

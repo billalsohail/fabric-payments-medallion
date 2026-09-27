@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import re
 import textwrap
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -247,6 +248,35 @@ def load(model_dir: Path = MODEL_DIR) -> Model:
         raise ValueError("model.tmdl: expected exactly one `model` block")
     exprs = [b for b in parse(model_dir / "expressions.tmdl") if b.kind == "expression"]
     return Model(tables=tables, relationships=rels, model=model_blocks[0], expressions=exprs)
+
+
+# -------------------------------------------------------------------------------------
+# Lineage tags
+# -------------------------------------------------------------------------------------
+# A lineage tag is how Fabric tracks a model object across a rename, so two objects sharing one is a
+# model with an ambiguous identity. Power BI Desktop mints them as random UUIDs, which is fine when a
+# tool is writing the file and bad when a person is: the obvious way to add an eleventh table to a
+# hand-authored model is to copy the tenth, and the obvious thing to forget is the tag.
+#
+# So they are derived from the object's path instead. `tests/test_semantic_model.py` re-derives every
+# one and compares, which turns "these happen to be unique today" into a property of the model —
+# and a copied-and-not-edited table file fails rather than passing.
+#
+# The namespace is a fixed UUIDv4, minted once for this repo and never regenerated. RFC 4122 wants a
+# namespace for name-based UUIDs, and having our own keeps these tags from colliding with anything
+# else's uuid5 of the same short string. It is a constant, not a seed: changing it rewrites every tag
+# in the model, which to Fabric reads as ten new objects rather than ten renamed ones.
+LINEAGE_NAMESPACE = uuid.UUID("92c82230-3e6b-43b7-8a11-d3ef203de007")
+
+
+def lineage_tag(path: str) -> str:
+    """The lineage tag for a model object, derived from its path within the model.
+
+    `path` is the object's location as the TMDL lays it out — `tables/fact_transaction`,
+    `expressions/DatabaseQuery`. The path rather than the bare name, so a future column-level or
+    measure-level tag cannot collide with a table of the same name.
+    """
+    return str(uuid.uuid5(LINEAGE_NAMESPACE, path))
 
 
 # `Table[column]` and `'Table name'[column]`.

@@ -32,7 +32,7 @@
 /// model-level RLS role would use.
 /// =====================================================================================
 table dim_customer
-	lineageTag: 6126af40-299f-56b9-9170-2a41d53d00eb
+	lineageTag: 950c05f8-90ab-5e01-a6f0-a7dddda6ee12
 
 	column customer_sk
 		dataType: int64
