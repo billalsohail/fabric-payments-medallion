@@ -77,8 +77,9 @@ The decision is "not for transformation", not "never".
 
 **Decision.** The semantic model is Direct Lake over the gold Warehouse, with its source kept as
 text — TMDL plus `measures.dax`, which is the format Fabric's own git integration stores, rather than
-a binary `.pbix`. `semantic-model/` is **empty at the time of writing**; the directory and this
-decision are ahead of the files, and the README's build-state table is the authority on what exists.
+a binary `.pbix`. `semantic-model/` now holds it: 10 tables, 14 relationships and 36 measures,
+checked by 23 tests against the warehouse DDL and **never loaded by Fabric or any DAX engine** — see
+[`semantic-model/README.md`](../semantic-model/README.md) for what that does and does not establish.
 
 **Why.** Import mode would mean a third copy of the data (Delta in OneLake, columnstore in the
 Warehouse, vertipaq in the model) and a refresh window that has to be scheduled after gold finishes

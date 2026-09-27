@@ -10,7 +10,7 @@ Fabric notebook code; it runs on a laptop.
 > ### Status
 >
 > **What runs:** landing → bronze → silver → gold, end-to-end, from a cold start, on PySpark 3.5 /
-> Delta 3.2 — the same pairing as the Fabric Spark runtime. 198 tests pass locally, including
+> Delta 3.2 — the same pairing as the Fabric Spark runtime. 221 tests pass locally, including
 > run-it-twice idempotency, SCD2 interval invariants, a reconciliation that ties every bronze row to
 > a silver row, a quarantined row or a deduplicated one, and a second reconciliation in which every
 > difference between silver and the star schema is enumerated and attributed to a named cause.
@@ -34,8 +34,13 @@ Fabric notebook code; it runs on a laptop.
 > locally and is a trap in CI, where a skipped session is a green tick. A build that proved nothing
 > must not look like a build that passed.
 >
-> **What is written but not yet built:** the semantic model and the `fabric/` deployment artefacts.
-> See [Build state](#8-build-state) — this repo is mid-build and the roadmap is stated rather than
+> **What is written but not yet built:** the static dashboard and the `fabric/` deployment
+> artefacts. The semantic model is written — `semantic-model/` holds the Direct Lake model in TMDL,
+> the text format Fabric's own git integration uses — and it is the one part of the repo whose
+> correctness rests on tests alone: 23 of them tie every column, relationship and measure reference
+> back to the warehouse DDL, and **no DAX engine has ever loaded it**
+> ([`semantic-model/README.md`](semantic-model/README.md)). See
+> [Build state](#8-build-state) — this repo is mid-build and the roadmap is stated rather than
 > implied.
 >
 > **What has never touched Microsoft Fabric:** all of it. I could not provision a tenant inside the
@@ -135,7 +140,7 @@ make generate SCALE=tiny    # deterministic landing files under ./_onelake/files
 make seed                   # the metadata control plane: config, DQ rules, watermarks
 make run                    # bronze, silver, gold — driven entirely by meta_source_config
 make run                    # run it again — this is the interesting one
-make test                   # 198 tests
+make test                   # 221 tests
 ```
 
 The second `make run` is the point. It should do almost nothing, and say so:
@@ -322,7 +327,7 @@ rather than emitting a zero-width row that no point-in-time join could ever retu
 
 ## 7. What the tests actually prove
 
-`make test` — 198 tests. The ones that matter:
+`make test` — 221 tests. The ones that matter:
 
 | Claim | Test |
 |---|---|
@@ -349,6 +354,14 @@ rather than emitting a zero-width row that no point-in-time join could ever retu
 | `distinct_account_count` is non-additive, and the warning is not hypothetical | `test_distinct_account_count_is_not_additive_and_is_only_right_per_day` |
 | The T-SQL uses only the documented Fabric Warehouse subset | `test_fabric_tsql_lint.py`, `make lint` |
 | The DDL declares no construct Fabric rejects | `test_warehouse_ddl.py` |
+| Every modelled column exists in the warehouse, with a compatible type | `test_every_modelled_column_exists_in_the_warehouse` |
+| Every model relationship has a declared foreign key behind it, and vice versa | `test_every_relationship_has_a_foreign_key_behind_it`, `test_every_foreign_key_has_a_relationship` |
+| No measure divides with `/`, so a zero denominator cannot render as Infinity | `test_no_measure_divides_with_a_slash` |
+| The non-additive aggregate column is reachable only through its grain guard | `test_the_non_additive_aggregate_column_is_only_reachable_through_a_guarded_measure` |
+| Every resolved-date dispute measure also excludes open disputes | `test_every_resolved_date_measure_also_excludes_open_disputes` |
+| Direct Lake cannot silently fall back to DirectQuery, and nothing is a calculated column | `test_the_model_forbids_falling_back_to_directquery`, `test_there_are_no_calculated_columns` |
+| Every lineage tag is derivable from its object's path, so a copied table file fails | `test_every_lineage_tag_is_derived_from_its_object_path` |
+| `measures.dax` has not drifted from the TMDL it is generated from | `make lint` (`tools/extract_dax.py --check`) |
 
 Three notes on how these are written, because they are the difference between a suite that checks
 the work and one that agrees with it:
@@ -396,7 +409,9 @@ Honest, because the alternative is worse. Three days were budgeted; this is the 
 | Gold: star-schema DDL + 10 load procedures | **Done**; logic executed and reconciled, dialect linted, never run by a T-SQL engine ([`docs/gold-execution.md`](docs/gold-execution.md)) |
 | `tools/fabric_tsql_lint.py` — Fabric T-SQL subset linter | **Done**, 70 tests, 41 rules, each citing the Microsoft Learn page and `ms.date` it came from |
 | CI (`.github/workflows/ci.yml`) | **Done and green.** A cold runner generates the feeds, runs all three stages, runs them again, then runs the suite — and asserts the suite was not skipped, because a skipped session is also a green tick |
-| Semantic model (TMDL + DAX), static dashboard | Not written |
+| Semantic model (TMDL) | **Done** — 10 tables, 14 relationships, 36 measures, 23 tests tying it to the warehouse DDL; **never loaded by Fabric or any DAX engine** ([`semantic-model/README.md`](semantic-model/README.md)) |
+| `semantic-model/measures.dax` | **Done and generated** from the TMDL by `tools/extract_dax.py`; `make lint` fails on drift |
+| Static dashboard (`dashboard/`) | Not written |
 | `fabric/` deployment artefacts + runbook | Not written; will be labelled UNVALIDATED in every file |
 | [`docs/fabric-tsql-subset.md`](docs/fabric-tsql-subset.md) | **Done** — the rules, the Learn pages they came from, the four corrections those pages forced, and what the linter cannot tell you |
 | [`docs/design-decisions.md`](docs/design-decisions.md) | **Done** — fourteen decisions, the last four made *by* the code rather than before it, each with the cost it carries |
@@ -421,6 +436,8 @@ docs/gold-execution.md        What executes the gold T-SQL with no tenant, and w
                               a reader to believe about it. Read before src/warehouse/.
 docs/design-decisions.md      Fourteen decisions and what each one cost. The last four were forced
                               by the code, and are kept separate for that reason.
+semantic-model/README.md      What the model is, what the 23 tests check, and the six named gaps —
+                              including why there are no RLS roles. Read before the TMDL.
 
 src/runtime/context.py        The shim. The keystone: local ↔ Fabric, one code path above it.
 src/runtime/params.py         Fabric notebook parameter-cell resolution.
@@ -446,7 +463,15 @@ src/warehouse/procs/          The ten load procedures. The gold deliverable.
 tools/fabric_tsql_lint.py     The portability gate: 41 Fabric Warehouse subset rules over sqlglot.
 
 orchestration/run.py          Local stand-in for the pl_master Fabric pipeline, all three stages.
-tests/                        198 tests. conftest.py builds an isolated lake per module.
+
+semantic-model/definition/    The Direct Lake model in TMDL: 10 tables, 14 relationships,
+                              36 measures. Hand-authored, never loaded by Fabric.
+semantic-model/measures.dax   Generated from the TMDL by tools/extract_dax.py. A runnable DAX query
+                              over every measure; do not edit it.
+tools/tmdl.py                 The TMDL reader the model's tests are built on, plus the lineage-tag
+                              derivation.
+
+tests/                        221 tests. conftest.py builds an isolated lake per module.
 ```
 
 If you are reviewing this and have ten minutes, read in this order: the header of
