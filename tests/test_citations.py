@@ -72,28 +72,6 @@ MD_LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 URL = re.compile(r"\bhttps?://\S+|\b[a-z0-9.-]+\.(?:com|io|org|net|dev|ai)/\S*")
 
 
-def _repo_files() -> list[Path]:
-    return [
-        p
-        for p in ROOT.rglob("*")
-        if p.is_file()
-        and not any(part in SKIP_DIRS for part in p.relative_to(ROOT).parts)
-        and ".egg-info" not in p.relative_to(ROOT).parts[0]
-    ]
-
-
-REPO_FILES = _repo_files()
-BASENAMES = {p.name for p in REPO_FILES}
-STEMS = {p.name.rsplit(".", 1)[0] for p in REPO_FILES}
-TOP_DIRS = {p.name for p in ROOT.iterdir() if p.is_dir() and p.name not in SKIP_DIRS}
-
-# The extensions this repository actually authors. Everything else backticked-with-a-dot is a dotted
-# identifier rather than a filename — `mssparkutils.notebook.run`, `Layer.META`, `sys.argv`,
-# `transactions.amount_minor.range` — and deriving the set rather than listing it means a new kind of
-# file starts being checked on the day one appears, without anyone remembering to add it.
-EXTENSIONS = {p.name.rsplit(".", 1)[1] for p in REPO_FILES if "." in p.name}
-
-
 def _generated_prefixes() -> tuple[str, ...]:
     """Paths `.gitignore` says are build output, read from it rather than repeated here.
 
@@ -101,6 +79,11 @@ def _generated_prefixes() -> tuple[str, ...]:
     after `make fabric-build` or `make dashboard` has run. Asserting on them would make this test
     pass or fail on whether someone had run a build, which is not a property of the documentation —
     and would fail on the CI runner that has not.
+
+    The same prefixes are excluded from the inventory below, and that matters more than it looks:
+    `.html` and `.pbism` exist in this repo *only* inside build output, so a version of this test
+    that inventoried them would derive a wider extension set on a developer's machine than on a cold
+    runner. A check whose strictness depends on what you last built is not a check.
     """
     prefixes = []
     for line in (ROOT / ".gitignore").read_text().splitlines():
@@ -114,6 +97,29 @@ def _generated_prefixes() -> tuple[str, ...]:
 
 
 GENERATED = _generated_prefixes()
+
+
+def _repo_files() -> list[Path]:
+    return [
+        p
+        for p in ROOT.rglob("*")
+        if p.is_file()
+        and not any(part in SKIP_DIRS for part in p.relative_to(ROOT).parts)
+        and ".egg-info" not in p.relative_to(ROOT).parts[0]
+        and not p.relative_to(ROOT).as_posix().startswith(GENERATED)
+    ]
+
+
+REPO_FILES = _repo_files()
+BASENAMES = {p.name for p in REPO_FILES}
+STEMS = {p.name.rsplit(".", 1)[0] for p in REPO_FILES}
+TOP_DIRS = {p.name for p in ROOT.iterdir() if p.is_dir() and p.name not in SKIP_DIRS}
+
+# The extensions this repository actually authors. Everything else backticked-with-a-dot is a dotted
+# identifier rather than a filename — `mssparkutils.notebook.run`, `Layer.META`, `sys.argv`,
+# `transactions.amount_minor.range` — and deriving the set rather than listing it means a new kind of
+# file starts being checked on the day one appears, without anyone remembering to add it.
+EXTENSIONS = {p.name.rsplit(".", 1)[1] for p in REPO_FILES if "." in p.name}
 
 SCAN_FILES = sorted(
     p
