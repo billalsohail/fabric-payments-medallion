@@ -446,7 +446,8 @@ Honest, because the alternative is worse. Three days were budgeted; this is the 
 | [`docs/fabric-tsql-subset.md`](docs/fabric-tsql-subset.md) | **Done** — the rules, the Learn pages they came from, the four corrections those pages forced, and what the linter cannot tell you |
 | [`docs/design-decisions.md`](docs/design-decisions.md) | **Done** — fourteen decisions, the last four made *by* the code rather than before it, each with the cost it carries |
 | [`docs/architecture.md`](docs/architecture.md) | **Done** — the structural view: the one-way dependency graph, the six seams and what each one promises, the single-owner table, what changing one thing actually costs, and "what I would add next, and why" for every cut in §10 below |
-| `docs/databricks-to-fabric.md`, `docs/cost-and-capacity.md` | Not written |
+| [`docs/databricks-to-fabric.md`](docs/databricks-to-fabric.md) | **Done** — nine rows of translation, and then the places where a Databricks habit produces a design that is wrong on Fabric rather than merely unfamiliar. §10 lists five platform facts I would have stated confidently and wrongly from memory, with the Learn page that corrected each; one of them added a test to the gold suite |
+| `docs/cost-and-capacity.md` | Not written |
 
 Beyond this build, the honest list of what a production version needs and this does not have:
 live-tenant validation; streaming ingestion (Eventstream → Eventhouse) for authorisations; Purview
@@ -467,6 +468,8 @@ docs/gold-execution.md        What executes the gold T-SQL with no tenant, and w
                               a reader to believe about it. Read before src/warehouse/.
 docs/design-decisions.md      Fourteen decisions and what each one cost. The last four were forced
                               by the code, and are kept separate for that reason.
+docs/databricks-to-fabric.md  The translation from a Databricks background, and the five platform
+                              facts I had wrong from memory until I read the page.
 semantic-model/README.md      What the model is, what the 23 tests check, and the six named gaps —
                               including why there are no RLS roles. Read before the TMDL.
 

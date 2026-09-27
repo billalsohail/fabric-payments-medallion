@@ -31,9 +31,17 @@
 -- after the load — belt and braces, because a silver-side guarantee says nothing about a bug in
 -- the gold load itself.
 --
--- The one thing `NOT ENFORCED` genuinely costs: a declared-but-violated key makes the
--- optimiser's join elimination *wrong*, not merely unhelpful, and the symptom is missing rows
--- rather than an error. That is the real argument for the post-load re-check.
+-- What `NOT ENFORCED` genuinely costs, in the order you would discover it. First, a
+-- declared-but-violated key makes the optimiser's join elimination *wrong*, not merely
+-- unhelpful, and the symptom is missing rows rather than an error. Second — and louder — Direct
+-- Lake requires that the one-side column of every relationship contain unique values, and
+-- *queries fail when duplicates are detected*
+-- (learn.microsoft.com/fabric/fundamentals/direct-lake-overview, ms.date 2026-09-02). This
+-- model sets `directLakeBehavior: DirectLakeOnly`, so there is no DirectQuery fallback to
+-- absorb it: a duplicated surrogate key is every report erroring for every user. Between the
+-- two, the second is the better failure mode, and neither is reached by anything Fabric checks
+-- at load time. Together they are the whole argument for the post-load re-check —
+-- `tests/test_gold_recon.py::test_every_dimension_surrogate_key_is_unique`.
 --
 -- Deployment order: after 02 and 03, before 05. ALTER TABLE ADD CONSTRAINT on a non-existent
 -- table fails the batch.

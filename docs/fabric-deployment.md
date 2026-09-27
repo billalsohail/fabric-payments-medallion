@@ -202,7 +202,7 @@ so the report format a new build would default to is the one that does not deplo
 ## 3. Workspace and domain layout
 
 ```
-Domain: Payments                       ← governance boundary, not a namespace
+Domain: Payments                       ← a label and a settings scope, not a boundary
   └── ws-payments-dev      (F2 / trial)   all 11 items, git-connected
   └── ws-payments-test     (F2)           deployment pipeline stage 2
   └── ws-payments-prod     (F64)          deployment pipeline stage 3
@@ -217,9 +217,14 @@ FROM lh_silver.dbo.*` stops being a supported cross-database read. The gold laye
 claim depends on the workspace layout, which is not obvious and is the kind of thing worth having
 found in the docs rather than in a failed deploy.
 
-The domain is the governance boundary — the thing that replaces a Unity Catalog catalog in the
-mental model, and the entry in `docs/databricks-to-fabric.md` most likely to be asked about. It
-carries endorsement and discovery, not access; access is per-workspace and per-item.
+The domain is where a Unity Catalog habit misleads hardest, and it is the entry in
+[`docs/databricks-to-fabric.md`](databricks-to-fabric.md) §2 most likely to be asked about. It
+carries endorsement and discovery, not access; access is per-workspace and per-item. Note what that
+rules out: Learn is explicit that *domain assignment doesn't affect item visibility or
+accessibility*, and every tenant user sees every domain whatever their role, so it is not a
+boundary in any sense a Unity Catalog catalog would suggest. It groups workspaces for discovery, and
+gives two tenant settings — a default sensitivity label and certification — somewhere narrower to be
+set from. It is a label plus a settings-delegation scope, and nothing in it is a permission.
 
 Capacity sizes are a guess. An F2 is enough for the `tiny` scale CI runs on and almost certainly not
 enough for the `demo` scale at 2M transactions; sizing needs a real run and a real capacity metrics

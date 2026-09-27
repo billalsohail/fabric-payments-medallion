@@ -129,6 +129,46 @@ def test_dimension_counts_are_staging_plus_one_unknown_member(warehouse, dim, st
     assert one(f"SELECT COUNT(*) FROM dbo.{dim}") == one(f"SELECT COUNT(*) FROM stg.{stage}") + 1
 
 
+@pytest.mark.parametrize(("dim", "key"), sorted(UNKNOWN_MEMBER_DIMS.items()))
+def test_every_dimension_surrogate_key_is_unique(warehouse, dim, key):
+    """The post-load re-check that `src/warehouse/ddl/04_constraints.sql` argues for.
+
+    Fabric Warehouse accepts a `PRIMARY KEY` only as `NOT ENFORCED`, so every key in
+    `04_constraints.sql` is a declaration the engine trusts and never checks. That file names one
+    consequence of trusting it wrongly: the optimiser's join elimination becomes *wrong* rather than
+    merely unhelpful, and the symptom is missing rows instead of an error.
+
+    There is a second consequence, and it is louder. Direct Lake requires that the one-side column
+    of every relationship contain unique values, and **queries fail when duplicates are detected**
+    (`learn.microsoft.com/fabric/fundamentals/direct-lake-overview`, ms.date 2026-09-02) — with no
+    DirectQuery fallback to hide behind, because `semantic-model/definition/model.tmdl` sets
+    `directLakeBehavior: DirectLakeOnly`. So a duplicated surrogate key here is a report that errors
+    for every user, and nothing between this test and that report would catch it.
+
+    The count tests above do not cover this. `dbo.dim_account = stg.dim_account + 1` stays true if
+    the load emits two rows sharing a surrogate key and drops a different one, which is exactly the
+    failure mode `ROW_NUMBER() OVER (...) + <current max>` has when the max is read against the
+    wrong snapshot. Asserting uniqueness directly is the only thing that sees it.
+
+    `dim_fx_rate` is absent because it has no surrogate key at all — the gold load resolves a rate
+    into `fact_transaction.fx_rate` as a value, which is the same reason it carries no unknown
+    member.
+    """
+    total = one(f"SELECT COUNT(*) FROM dbo.{dim}")
+    distinct = one(f"SELECT COUNT(DISTINCT {key}) FROM dbo.{dim}")
+    if total != distinct:
+        dupes = q(
+            f"SELECT {key}, COUNT(*) AS n FROM dbo.{dim} "
+            f"GROUP BY {key} HAVING COUNT(*) > 1 ORDER BY n DESC LIMIT 5"
+        )
+        raise AssertionError(
+            f"dbo.{dim}.{key} is not unique: {total} rows, {distinct} distinct keys. "
+            f"Worst offenders: {[(r[key], r['n']) for r in dupes]}. This key is declared "
+            f"NOT ENFORCED in 04_constraints.sql, so nothing rejected it at load time, and a "
+            f"Direct Lake model over this table would fail every query that traverses it."
+        )
+
+
 def test_fx_rates_carry_no_unknown_member(warehouse):
     """`dim_fx_rate` is the one loaded dimension with no sentinel, because nothing holds a surrogate
     key to it: the gold load resolves a rate into `fact_transaction.fx_rate` as a value. A sentinel
