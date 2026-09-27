@@ -68,15 +68,20 @@ test: setup  ## Full test suite
 test-fast: setup  ## Test suite without the end-to-end/slow cases
 	$(PY) -m pytest -m 'not slow' $(PYTEST_ARGS)
 
+# Three checks, cheapest first. The third is a drift check rather than a lint: measures live in the
+# TMDL and semantic-model/measures.dax is generated from them, so --check is what keeps the derived
+# copy honest. It fails with a diff and the command to fix it — see tools/extract_dax.py.
+#
 # The T-SQL lint is its own unguarded line, and that is a correction rather than a style choice. It
 # used to read `test -d src/warehouse && <linter> || echo "...skipping"`, written while
 # src/warehouse did not exist yet. In `sh`, `a && b || c` runs `c` whenever `b` *fails*, not only
 # when `a` does — so a genuine lint error took the `echo` branch and the recipe exited 0. `make
 # lint` could not fail, and neither could the CI step that runs it. src/warehouse is committed now,
 # so the guard has nothing left to guard and the failure path is all it ever affected.
-lint: setup  ## Ruff over python, Fabric T-SQL subset linter over warehouse SQL
+lint: setup  ## Ruff, Fabric T-SQL subset linter, and the measures.dax drift check
 	$(VENV)/bin/ruff check src orchestration tools tests
 	$(PY) tools/fabric_tsql_lint.py src/warehouse
+	$(PY) tools/extract_dax.py --check
 
 dashboard: setup  ## Build the static dashboard (stand-in for the Direct Lake report)
 	$(PY) dashboard/build_dashboard.py
