@@ -155,21 +155,21 @@ source control, and §4 is where the reasons this step is more complicated than 
 
 ## 2. Item inventory
 
-Every Fabric item this repo implies, and the files it comes from. **This lists what exists.** The
-plan this repo was built from also named an `nb_03_table_maintenance` notebook for `OPTIMIZE` and
-`VACUUM`; it was not built, so it is not here, and Delta maintenance is on the list in §9 rather
-than pretended into the inventory.
+Every Fabric item this repo implies, and the files it comes from. **This lists what exists.** The two
+rows that say "does not exist" mean it, and nothing else in the table is aspirational — a row is here
+because a file in this repo would become that item.
 
 | Fabric item | Type | Source in this repo |
 |---|---|---|
 | `lh_bronze` | Lakehouse | `Layer.BRONZE`; also holds `Files/landing/` |
 | `lh_silver` | Lakehouse | `Layer.SILVER` |
-| `lh_meta` | Lakehouse | `Layer.META` — the 5 control-plane tables |
+| `lh_meta` | Lakehouse | `Layer.META` — the 6 control-plane tables |
 | `lh_quarantine` | Lakehouse | `Layer.QUARANTINE` — `q_<entity>`, `src/lib/dq.py` |
 | `wh_gold` | Warehouse | `src/warehouse/ddl/` + `src/warehouse/procs/` |
 | `nb_00_generate_landing_data` | Notebook | `src/notebooks/nb_00_generate_landing_data.py` |
 | `nb_01_bronze_ingest` | Notebook | `src/notebooks/nb_01_bronze_ingest.py` |
 | `nb_02_silver_transform` | Notebook | `src/notebooks/nb_02_silver_transform.py` |
+| `nb_03_table_maintenance` | Notebook | `src/notebooks/nb_03_table_maintenance.py` — scheduled, **not** in `pl_master` |
 | `nb_99_seed_metadata` | Notebook | `src/notebooks/nb_99_seed_metadata.py` |
 | `pl_master` | Data pipeline | `orchestration/run.py` — see §7 |
 | `sm_payments` | Semantic model | `semantic-model/` (TMDL, Direct Lake) |
@@ -177,7 +177,7 @@ than pretended into the inventory.
 | `env_payments` | Environment | **Does not exist.** See below |
 | `vl_payments` | Variable library | Designed in §6; no item file |
 
-Fourteen rows, eleven of them real, which is well inside the 300-item-per-deployment limit
+Fifteen rows, twelve of them real, which is well inside the 300-item-per-deployment limit
 ([understand-the-deployment-process](https://learn.microsoft.com/fabric/cicd/deployment-pipelines/understand-the-deployment-process)).
 
 **Two absences worth naming rather than leaving as gaps in a table.**
@@ -531,11 +531,17 @@ wrong silently. The likeliest first failure is a duplicated `logicalId` from cop
 **5. Capacity sizing in §3 is a guess**, and `docs/cost-and-capacity.md` cannot fix it without a
 capacity metrics app and a real run.
 
-**6. Delta maintenance is missing entirely.** No `OPTIMIZE`, no `VACUUM`, no V-Order tuning, and no
-notebook that would do them — the plan named an `nb_03_table_maintenance` and it was not built. On a
-laptop at `tiny` scale nothing notices. At `demo` scale over eighteen months of daily partitions it
-is the first thing that would bite, and it is the honest first item of any "what would you do next"
-answer about this repo.
+**6. Delta maintenance exists now, but its schedule is untested and one of its numbers is a
+guess.** `nb_03_table_maintenance` runs `OPTIMIZE` then `VACUUM` over the 21 lakehouse tables and
+logs every action, and running it over the real lake took the whole lake from 1.91× to 1.15×
+live-to-on-disk. Two things about it remain unvalidated here. **The schedule is a claim, not a
+configuration:** nothing in `fabric/` expresses "weekly, after the last load of the week", so on a
+tenant it is a scheduler setting somebody has to make, and the right cadence depends on partition
+growth this repo has not observed for eighteen months. **And the `--small-file-mib 16` threshold
+that triggers the partition advisory is a convention rather than a measurement** — it is the right
+order of magnitude for Parquet and it is not a number I read off a Learn page. Both would be
+settled by one month of `meta_maintenance_log` rows on a real capacity, which is a shorter list of
+unknowns than this item used to carry and a more specific one.
 
 ---
 

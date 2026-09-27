@@ -176,17 +176,19 @@ elapsed time, the pressure is not a future problem at all. **2.7 rows per file i
 visible today, at 50 thousand rows.** It is not a scale symptom; it is a design consequence that was
 there on day one.
 
-This sharpens [`docs/fabric-deployment.md`](fabric-deployment.md) §9 item 6, which names the missing
-`OPTIMIZE`, `VACUUM` and `nb_03_table_maintenance` as the honest first gap. The refinement: the
-trigger for compaction in this design is **calendar time, not row count**, and the number to watch
-is partitions per table rather than gigabytes. A pipeline that ingests daily needs compaction on a
-schedule even if its volume never grows at all.
+Two things follow, and the second is the one I did not expect. The trigger for compaction in this
+design is **calendar time, not row count**, so the number to watch is partitions per table rather
+than gigabytes: a pipeline that ingests daily needs a maintenance schedule even if its volume never
+grows at all. And because live files equals partitions in all seven rows, bronze is *already fully
+bin-packed* — there is no second file in any partition for `OPTIMIZE` to merge with the first. §6
+runs it and measures exactly that.
 
 ---
 
-## 6. What `VACUUM` would reclaim, measured
+## 6. What maintenance actually reclaimed, and the table it could not help
 
-Every bronze table holds **exactly twice** the parquet files its current snapshot references:
+Before `nb_03_table_maintenance` existed, every bronze table held **exactly twice** the parquet
+files its current snapshot referenced:
 
 ```
 br_transactions   240 on disk / 120 live   = 2.0x
@@ -198,20 +200,72 @@ br_merchants        8 on disk /   4 live   = 2.0x
 br_card_products    2 on disk /   1 live   = 2.0x
 ```
 
-Across the whole lake it is 617 live files against 1,179 on disk, or 1.91×.
+Across the whole lake, 618 live files against 1,183 on disk — **1.91×**. Seven tables at the same
+ratio to one decimal place, and the cause is knowable rather than mysterious: `make run` was executed
+twice, the batch-level rerun in `nb_01_bronze_ingest` deletes and reinserts the batch it replaces,
+and the removed files stayed on disk because nothing reclaimed them. The idempotency guarantee is
+real, and **100% storage overhead on bronze** was its price.
 
-Seven tables, the same ratio to one decimal place in all seven, and the cause is knowable rather
-than mysterious: `make run` was executed twice, the batch-level rerun in `nb_01_bronze_ingest`
-deletes and reinserts the batch it is replacing, and the removed files stay on disk until a `VACUUM`
-this repo never runs. The idempotency guarantee is real, and this is its storage cost.
+Then `make maintain MAINTAIN_ARGS='--vacuum-retain-hours 0'` ran over all 21 lakehouse tables —
+42 actions, 0 failures — and the ratio is now **1.15×**: 533 live files against 615 on disk. Every
+bronze table sits at exactly **1.0×**. Of the 82 files still above the live count, **all 82 are in
+gold**, which that notebook refuses by design because on Fabric gold is a Warehouse and manages its
+own storage. So the residual overhead in this lake is not a gap; it is the layer boundary, and it is
+the same boundary `tools/fabric_tsql_lint.py` enforces from the other side.
 
-So the missing maintenance notebook currently carries **100% storage overhead on bronze**, and that
-number is measured rather than inferred. What it *costs* is a different question: OneLake storage
-and capacity compute are billed on different bases, and rather than state a billing treatment from
-memory I will say that this is the one figure on this page that a pricing page could settle without
-a tenant — and that I have not read it, so the overhead is quantified and its price is not.
+### The result that changes the §5 argument
 
----
+`OPTIMIZE` compacted **94 files into 8** — and not one of them was in bronze:
+
+| Table | Files | Live bytes | Factor |
+|---|---|---|---|
+| `meta_run_log` | 48 → 1 | 200,293 → 6,010 | **33×** |
+| `meta_dq_results` | 34 → 1 | 162,257 → 7,655 | 21× |
+| `meta_watermark` | 13 → 7 | 20,298 → 10,567 | 1.9× |
+| every bronze table | unchanged | unchanged | **1.0×** |
+
+Two things in that table are worth saying out loud.
+
+**The byte collapse is larger than the file-count change explains.** `meta_run_log` lost 97% of its
+live size to a pure reorganisation, because 48 single-batch Parquet files each carry their own
+footer, schema and column dictionaries — 48 copies of the overhead and almost no data. File count is
+the number Direct Lake guardrails read, but bytes are what a capacity pays to scan.
+
+**Bronze did not move, and it could not have.** `OPTIMIZE` bin-packs *within* a partition and never
+across one — a partition is a directory, and merging two of them is not a compaction. §5 measured one
+live file per partition in all seven bronze tables, which means bronze was **already at the end state
+of bin-packing** before the sweep ran. Delta's own metrics confirm it rather than my reading of them:
+`numFilesRemoved` and `partitionsOptimized` were both `0` on every bronze table. `meta_watermark` is
+the control case in the same run — partitioned by `entity`, seven entities, so 13 files became 7 and
+not 1.
+
+So the notebook reports those six tables as an advisory rather than a success:
+
+> `bronze.br_disputes`: 95 files across `ingest_date` partitions averaging 5 KiB; OPTIMIZE cannot
+> merge across partition boundaries, so the fix is the partition grain in `meta_source_config`, not
+> maintenance
+
+That is the sentence this section exists to earn. A maintenance job that reported "95 files, 95
+files, success" on `br_disputes` would be truthful, and would retire the problem from somebody's
+list while changing nothing. The remedy is **one value in one config row** — `partition_column` set
+to a month rather than a day — and it is a design decision, not something a schedule can fix.
+
+### Where the 168-hour default puts the two operations
+
+`VACUUM` removed **577 stale files**, but only because the sweep was run with `--vacuum-retain-hours
+0`. At the 168-hour default it removes nothing in this lake, and that is correct rather than broken:
+every file here is hours old, so the whole tombstone set is inside the retention window. On a
+schedule the two operations therefore **pipeline across runs** — tonight's `OPTIMIZE` tombstones
+files that next week's `VACUUM` reclaims — and they compound within a single run only at a retention
+nobody should use in production. Going under the default ends time travel before that point and can
+delete files an in-flight reader still needs, so `nb_03` logs a warning when a caller does it.
+Reaching for `retain 0` to make a demonstration visible is a choice worth stating; reaching for it
+on a capacity is a different thing wearing the same flag.
+
+What the reclaimed storage *costs* remains open: OneLake storage and capacity compute are billed on
+different bases, and rather than state a billing treatment from memory I will say this is the one
+figure on this page a pricing page could settle without a tenant, and that I have not read it. The
+overhead is measured; its price is not.
 
 ## 7. The compute wall: an F2 is one node
 
@@ -315,7 +369,9 @@ thing that gets revised upward quietly.
 | `learn.microsoft.com/fabric/enterprise/throttling` | 2026-08-14 | §9, via `databricks-to-fabric.md` §9 |
 
 Measurements in §2, §3, §5 and §6 were read from the Delta transaction logs in `./_onelake/` after
-`make run` at `--scale tiny`; `tools/lake_footprint.py --all` regenerates all four. Where a Learn
+`make run` at `--scale tiny`; `tools/lake_footprint.py --all` regenerates all four, and §6's
+before/after is that tool run either side of `make maintain`. The per-table numbers in §6 are also in
+`meta.meta_maintenance_log`, which the sweep writes as it goes. Where a Learn
 page and a measurement disagree, the measurement is about this repo and the page is about the
 platform; §5 is the one section where that distinction does real work.
 

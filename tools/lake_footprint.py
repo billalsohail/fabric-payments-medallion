@@ -222,8 +222,14 @@ def partitions(tables: list[Table]) -> None:
 
 
 def vacuum(tables: list[Table]) -> None:
-    """The §6 number: what the missing maintenance notebook costs in storage, today."""
-    print("## Live versus on disk (what a VACUUM would reclaim)\n")
+    """The §6 number: how much of the lake is tombstones, now that something reclaims them.
+
+    A ratio of 1.0x means every file on disk is referenced by the current snapshot, which is what a
+    table looks like immediately after `make maintain`. Anything above it is tombstoned files inside
+    the retention window — not waste, but storage the next sweep can release. Gold sits above it
+    permanently and correctly: `nb_03` refuses that layer, because on Fabric it is a Warehouse.
+    """
+    print("## Live versus on disk (tombstones a VACUUM would reclaim)\n")
     print("| Layer | Table | Live files | On disk | Ratio |")
     print("|---|---|---|---|---|")
     for t in tables:
@@ -231,10 +237,14 @@ def vacuum(tables: list[Table]) -> None:
         print(f"| {t.layer} | `{t.name}` | {t.live_files} | {t.on_disk_files} | {ratio:.1f}x |")
     live = sum(t.live_files for t in tables)
     disk = sum(t.on_disk_files for t in tables)
+    gold = [t for t in tables if t.layer.startswith("gold")]
+    gold_excess = sum(t.on_disk_files - t.live_files for t in gold)
     print(
         f"\nWhole lake: {live} live, {disk} on disk, {disk / live:.2f}x. Every file above the live "
-        f"count is\na tombstoned file no snapshot references, retained because this repo never runs "
-        f"VACUUM\n(docs/fabric-deployment.md §9 item 6)."
+        f"count is\na tombstoned file no snapshot references, released by `make maintain` "
+        f"(nb_03_table_maintenance).\nOf the {disk - live} excess, {gold_excess} are in gold, which "
+        f"that notebook deliberately does not touch:\non Fabric gold is a Warehouse and manages its "
+        f"own storage. See docs/cost-and-capacity.md §6."
     )
 
 

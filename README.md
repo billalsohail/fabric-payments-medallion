@@ -10,7 +10,7 @@ Fabric notebook code; it runs on a laptop.
 > ### Status
 >
 > **What runs:** landing → bronze → silver → gold, end-to-end, from a cold start, on PySpark 3.5 /
-> Delta 3.2 — the same pairing as the Fabric Spark runtime. 273 tests pass locally, including
+> Delta 3.2 — the same pairing as the Fabric Spark runtime. 290 tests pass locally, including
 > run-it-twice idempotency, SCD2 interval invariants, a reconciliation that ties every bronze row to
 > a silver row, a quarantined row or a deduplicated one, and a second reconciliation in which every
 > difference between silver and the star schema is enumerated and attributed to a named cause.
@@ -163,7 +163,8 @@ make generate SCALE=tiny    # deterministic landing files under ./_onelake/files
 make seed                   # the metadata control plane: config, DQ rules, watermarks
 make run                    # bronze, silver, gold — driven entirely by meta_source_config
 make run                    # run it again — this is the interesting one
-make test                   # 273 tests
+make test                   # 290 tests
+make maintain               # OPTIMIZE + VACUUM the Delta layers, on its own schedule
 ```
 
 The second `make run` is the point. It should do almost nothing, and say so:
@@ -274,8 +275,8 @@ lakehouse SQL endpoint directly.
 
 ## 5. The control plane
 
-Five Delta tables, seeded by `nb_99_seed_metadata.py`, that between them contain every per-feed
-decision:
+Six Delta tables, seeded by `nb_99_seed_metadata.py`. Five of them contain every per-feed decision;
+the sixth is written by the maintenance notebook rather than read by the pipeline:
 
 | Table | Holds |
 |---|---|
@@ -284,6 +285,7 @@ decision:
 | `meta_watermark` | High-water mark per `(entity, layer)` — bronze and silver advance independently |
 | `meta_run_log` | One row per step: rows read / written / quarantined / deduplicated, status, timing |
 | `meta_dq_results` | One row per rule per batch: the verdict, the rate, and whether it breached |
+| `meta_maintenance_log` | One row per table per maintenance action: files and bytes before and after, what `OPTIMIZE` merged, what `VACUUM` removed, and the V-Order property as read |
 
 Two of those deserve a note, because both are places where the obvious design is wrong.
 
@@ -350,7 +352,7 @@ rather than emitting a zero-width row that no point-in-time join could ever retu
 
 ## 7. What the tests actually prove
 
-`make test` — 273 tests. The ones that matter:
+`make test` — 290 tests. The ones that matter:
 
 | Claim | Test |
 |---|---|
@@ -388,6 +390,10 @@ rather than emitting a zero-width row that no point-in-time join could ever retu
 | Every import in the repo points one way, and the shim depends on nothing above it | `test_import_graph.py` |
 | The parameters the orchestrator passes are parameters the notebooks declare | `test_the_orchestrator_passes_parameters_the_notebooks_actually_have` |
 | The shim has no SQL escape hatch, and hands no caller a path or a table name | `test_import_graph.py` |
+| `OPTIMIZE` cannot merge across partitions, which is why it cannot fix bronze | `test_optimize_cannot_merge_across_partitions_and_says_so` |
+| Gold is unreachable from the maintenance notebook by type, not by convention | `test_gold_is_not_a_maintainable_layer` |
+| `VACUUM` removes stale files and leaves the live snapshot byte-identical | `test_vacuum_removes_stale_files_and_leaves_the_live_snapshot_alone` |
+| The maintenance log is the seeder's schema, not a second copy of it | `test_the_log_uses_the_seeders_schema_rather_than_a_second_copy` |
 | A money measure divides by 100 exactly when it sums a minor-units column, and a `_minor` column is never formatted as money | `test_a_measure_sums_minor_units_exactly_when_it_divides_by_100`, `test_every_minor_column_is_formatted_as_an_integer` |
 | The average approved payment is a plausible figure in pounds, not a figure 100x too large | `test_dashboard_average_approved_value_is_in_pounds_not_pence` |
 | Two measures agree with a third SQL path that shares no expression with the dashboard's | `test_dashboard_authorisation_rate_agrees_with_an_independent_count` |
@@ -430,7 +436,7 @@ Honest, because the alternative is worse. Three days were budgeted; this is the 
 | Area | State |
 |---|---|
 | Execution-context shim, data contracts, deterministic generator | **Done**, tested |
-| Control plane (5 metadata tables) | **Done**, seeded |
+| Control plane (6 metadata tables) | **Done**, seeded |
 | Bronze ingest, idempotent, schema-evolving | **Done**, tested |
 | Local orchestrator mirroring `pl_master`, all three stages | **Done** |
 | DQ rule engine, SCD2, type contracts | **Done**, tested |
@@ -490,6 +496,8 @@ src/lib/gold.py               The gold harness: interprets the T-SQL procs again
 src/notebooks/nb_00_*.py      Generate landing data. A feature, not fixture setup.
 src/notebooks/nb_01_*.py      Bronze ingest — one notebook, seven feeds, no branches.
 src/notebooks/nb_02_*.py      Silver transform — one notebook, seven feeds, no branches.
+src/notebooks/nb_03_*.py      OPTIMIZE and VACUUM over the lakehouse layers, logged per table.
+                              Deliberately not a pipeline stage; gold is refused, not forgotten.
 src/notebooks/nb_99_*.py      Seed the control plane.
 
 src/warehouse/ddl/            wh_gold DDL: schemas, dimensions, facts, aggregate, security.
@@ -507,7 +515,7 @@ semantic-model/measures.dax   Generated from the TMDL by tools/extract_dax.py. A
 tools/tmdl.py                 The TMDL reader the model's tests are built on, plus the lineage-tag
                               derivation.
 
-tests/                        273 tests. conftest.py builds an isolated lake per module.
+tests/                        290 tests. conftest.py builds an isolated lake per module.
 tests/test_import_graph.py    The one test whose subject is a document: it enforces the import
                               graph docs/architecture.md §1 describes.
 ```
@@ -530,6 +538,9 @@ those reasons are worth reading before the others: fraud scoring is absent becau
 Data Functions is the one item I argue I would **not** add, which seemed more useful than
 inventing a use for it.
 
-That section also carries one item README does not list, because it is not a cut: Delta
-maintenance — `OPTIMIZE` and `VACUUM` over bronze and silver — was in the plan and is not in the
-repo, and it is first on the list for that reason.
+That section also carries one item README does not list, because it is not a cut and is no longer
+missing: Delta maintenance. `nb_03_table_maintenance.py` runs `OPTIMIZE` then `VACUUM` over the
+lakehouse layers and logs every action, and it keeps first place on that list because building it
+**refuted** what this repo had written about it — `OPTIMIZE` cannot compact bronze here, and the
+fix bronze actually needs is a partition-column decision rather than a maintenance job.
+[`docs/cost-and-capacity.md`](docs/cost-and-capacity.md) §6 has the measurement that settles it.

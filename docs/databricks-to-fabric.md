@@ -128,8 +128,8 @@ changing an existing table's layout means rewriting it with `OPTIMIZE`. The olde
 form I would have typed from memory.
 
 To be straight about provenance: [`docs/architecture.md`](architecture.md) §6 already states that
-default and already records it as a fact it would have got wrong, because the maintenance-gap item
-there needed it. This page did not discover it. What it adds is the write cost, the two remaining
+default and already records it as a fact it would have got wrong, because the maintenance
+notebook item there needed it. This page did not discover it. What it adds is the write cost, the two remaining
 switches, and the reason the default moved — and the fact that it is worth repeating in two places is
 itself the argument for §10.
 
@@ -353,7 +353,7 @@ would have said in an interview, and each was wrong.
 1. **"V-Order is on by default."** It is **off** in all newly created workspaces, and the session
    setting I would have reached for (`spark.sql.parquet.vorder.enable`) was removed in runtime 1.3.
    This one was already caught in [`docs/architecture.md`](architecture.md) §6 while writing the
-   maintenance-gap item; it is listed here because the list would be dishonest without the one entry
+   maintenance-notebook item; it is listed here because the list would be dishonest without the one entry
    that had already cost me a correction elsewhere.
 2. **"Direct Lake falls back to DirectQuery."** Only *Direct Lake on SQL* does. *Direct Lake on
    OneLake* has no fallback: a guardrail breach fails the refresh and leaves the model unqueryable.

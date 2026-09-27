@@ -335,13 +335,28 @@ as a question about the engine's choices and the statistics it has, not about DD
 **What breaks first at 100×, in order.** This is the part worth being specific about, because "it
 would scale" is not an answer:
 
-1. **Small-file pressure in bronze.** Seven feeds × daily partitions × one write per batch, and
-   **nothing in this repo compacts anything** — there is no `OPTIMIZE`, no V-Order and no maintenance
-   notebook. The original plan had one (`nb_03_table_maintenance`) and it was cut for time, which is
-   the honest reason rather than a design argument. At 50k rows it costs nothing measurable; at 100×
-   it is the first thing to hurt, and the first symptom is planning time on silver reads growing
-   faster than the data does. The fix is a scheduled `OPTIMIZE` with V-Order per bronze table, and it
-   is the single largest known gap in this pipeline's operational story.
+1. **Small-file pressure in bronze — and the fix is not the one I first wrote here.** Seven feeds ×
+   daily partitions × one write per batch gives 120 files of 5–28 KiB in `br_transactions` at 50k
+   rows. At 100× the window it is 12,000, and the first symptom is planning time on silver reads
+   growing faster than the data does.
+
+   This item used to say the fix was *"a scheduled `OPTIMIZE` with V-Order per bronze table"*. Both
+   halves were wrong, and `nb_03_table_maintenance` was written partly to find that out. `OPTIMIZE`
+   bin-packs **within** a partition and never across one, so a table holding exactly one file per
+   partition — which is every bronze table here — is already at the end state of bin-packing.
+   Measured over the real lake, compaction removed 0 files and touched 0 partitions on all seven,
+   while `meta_run_log` in the same sweep went 48 files → 1 and 200 KB → 6 KB. And V-Order is a
+   Fabric write optimisation that OSS Delta rejects outright: setting
+   `delta.parquet.vorder.enabled` locally raises `DELTA_UNKNOWN_CONFIGURATION`, so the notebook
+   reads and reports the property rather than writing it. It would also buy nothing here, because
+   no lakehouse table in this design is read by Direct Lake — gold is a Warehouse, which is #1.
+
+   The real fix is **`partition_column` in `meta_source_config`** — one value in one config row,
+   changing the grain from day to month. That is a design decision rather than an operational one,
+   which is the interesting part: a maintenance schedule cannot reach it, and a maintenance job that
+   reported success on `br_disputes` would have retired the problem from somebody's list while
+   changing nothing. So the notebook reports those tables as an advisory naming the config column
+   instead. [`docs/cost-and-capacity.md`](cost-and-capacity.md) §6 has the before/after numbers.
 2. **Shuffle on the silver SCD2 merges.** The merges are keyed joins over the full dimension, so cost
    grows with dimension size and not just with the increment. The fix is to narrow the merge target
    before reaching for a bigger pool: restrict the match to open versions (`is_current = true`, or

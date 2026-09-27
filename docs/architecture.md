@@ -64,6 +64,7 @@ function the orchestrator calls by keyword and a `main()` that takes nothing:
 | `nb_00_generate_landing_data` | `main()` | Notebook, run by hand or on a schedule |
 | `nb_01_bronze_ingest` | `ingest(entity, until_date, batch_id, run_id, force_reload)` | Notebook activity, five parameters |
 | `nb_02_silver_transform` | `transform(entity, run_id, until_date, force_reload)` | Notebook activity, four parameters |
+| `nb_03_table_maintenance` | `maintain(layers, tables, actions, vacuum_retain_hours, small_file_mib, dry_run, run_id)` | Notebook activity on its own schedule, **not** in `pl_master` |
 | `nb_99_seed_metadata` | `main()` | Notebook, run once per environment |
 
 `main()` takes no arguments on purpose. Parameters arrive through `src.runtime.params`, which reads
@@ -205,12 +206,12 @@ that goes to the detail fact. Both are kept, so the choice is visible.
 
 ### Seam 5 — control plane ↔ everything: *declared config is read-only at runtime*
 
-**What crosses:** five Delta tables in `lh_meta`, and they split cleanly in two:
+**What crosses:** six Delta tables in `lh_meta`, and they split cleanly in two:
 
 | | Tables | Written by | Read by |
 |---|---|---|---|
 | **Declared** | `meta_source_config`, `meta_dq_rules` | `nb_99_seed_metadata` only, `mode="overwrite"` | notebooks, orchestrator, DQ engine |
-| **Observed** | `meta_run_log`, `meta_dq_results`, `meta_watermark` | the runtime, every run | `meta_watermark` feeds the next run; the other two are read by humans and tests |
+| **Observed** | `meta_run_log`, `meta_dq_results`, `meta_watermark`, `meta_maintenance_log` | the runtime, every run | `meta_watermark` feeds the next run; the rest are read by humans and tests |
 
 **The contract:** nothing in `src/notebooks/nb_01`, `nb_02` or `src/lib/` ever writes a declared
 table. That is what makes `nb_99` re-runnable as the source of truth and what makes a config change
@@ -330,7 +331,7 @@ semantic-model/*.tmdl ──verified by──►  tests/test_semantic_model.py (
                       ──extracted by──►  tools/extract_dax.py         (drift fails CI)
                       ──evaluated by──►  dashboard/build_dashboard.py (the numbers are sensible)
 
-src/lib/*, notebooks  ──verified by──►  tests/  (273 tests; an isolated lake per module)
+src/lib/*, notebooks  ──verified by──►  tests/  (290 tests; an isolated lake per module)
 
 §1 of this page    ──verified by──►  tests/test_import_graph.py   (the ASTs, not the prose)
 ```
@@ -349,30 +350,40 @@ is what keeps those two verdicts independent rather than two readings of the sam
 ## 6. What I would add next, and why
 
 Seven things are out of scope, and `README.md` §10 promises each one a sentence here. Each is a cut
-rather than an oversight. They are items 2–8 below; item 1 is not on that list, because it is not a
-cut at all but the one thing the plan specified and the repo does not have, and putting it anywhere
-other than first would be flattering. The order after it is the order I would actually work in,
-which is not the order of how impressive the items sound.
+rather than an oversight. They are items 2–8 below, in the order I would actually work in, which is
+not the order of how impressive the items sound.
 
-**1. Delta maintenance (`nb_03_table_maintenance`) — first, and it is not a feature.** `OPTIMIZE`
-and `VACUUM` over the bronze and silver tables, on a schedule. This was specified in the plan and
-not built, which makes it the only item here that is a genuine gap rather than a boundary: every
-bronze load appends, every silver merge rewrites files, and nothing in the repo ever compacts
-either. At 2M rows that costs nothing; at 200M, small-file pressure is the first thing on the §4
-list to hurt, and it hurts the SCD2 merges before it hurts anything a reader would notice.
+Item 1 is kept, and its number with it, because it is the one entry on this list that has moved.
 
-The scope of that notebook is worth being exact about, because the obvious wider version of it would
-be wrong here. It is a **lakehouse** concern only. `wh_gold` is a Warehouse and manages its own
-storage — there is no `OPTIMIZE` for a user to run against it — so V-Order, the write-time Parquet
-optimisation that read-heavy Direct Lake queries benefit from, does not arise for the tables this
-model actually reads. It would arise immediately if a future semantic model read a lakehouse table
-directly, and the default is the part worth knowing: V-Order is **disabled by default in all newly
-created workspaces**, because the default favours write-heavy engineering over read-heavy serving.
-So the lakehouse-serving version of this item is not "remember to leave V-Order on" but a deliberate
-choice per table — a read-heavy resource profile, a `delta.parquet.vorder.enabled` table property,
-or an `OPTIMIZE` that applies it. That is the version worth designing for rather than the version
-that exists today. I would do it before anything below because an operational gap outranks a missing
-capability.
+**1. Delta maintenance (`nb_03_table_maintenance`) — built, and the build reversed the fix.** This
+was the only genuine gap on this page rather than a boundary: the plan specified the notebook, it was
+cut for time, and nothing in the repo compacted anything. It exists now — `make maintain`, `OPTIMIZE`
+then `VACUUM` over the 21 lakehouse tables, one row per (table, action) into `meta_maintenance_log`.
+What it found is worth more than the notebook.
+
+**`OPTIMIZE` cannot fix bronze, and this page used to say it could.** Bin-packing happens *within* a
+partition and never across one, and bronze holds exactly one file per `ingest_date` partition — so
+it was already at the end state of compaction before the sweep ran. Delta's own metrics confirmed
+it: 0 files removed, 0 partitions touched, on all seven tables. The same sweep took `meta_run_log`
+from 48 files to 1 and 200 KB to 6 KB, which is where compaction does pay — unpartitioned append
+tables. The remedy for bronze is `partition_column` in `meta_source_config`, a **design** change a
+schedule cannot reach, so the notebook reports those six tables as an advisory naming that column
+instead of reporting a success. [`docs/cost-and-capacity.md`](cost-and-capacity.md) §6 has the
+before/after.
+
+**The scope is deliberately narrow, and the narrowness is the design.** It is a **lakehouse** concern
+only: `Layer` has no `GOLD` member, and asking for gold raises rather than being silently skipped.
+`wh_gold` is a Warehouse and manages its own storage — there is no `OPTIMIZE` for a user to run
+against it — so V-Order, the write-time Parquet optimisation read-heavy Direct Lake queries benefit
+from, does not arise for the tables this model reads. It would arise immediately if a future semantic
+model read a lakehouse table directly, and the default is the part worth knowing: V-Order is
+**disabled by default in all newly created workspaces**, because the default favours write-heavy
+engineering over read-heavy serving. So the lakehouse-serving version is not "remember to leave
+V-Order on" but a deliberate choice per table — a read-heavy resource profile, a
+`delta.parquet.vorder.enabled` table property, or an `OPTIMIZE` that applies it. The notebook
+therefore **reads and reports** that property and never writes it, which is also the only thing it
+could do: OSS Delta 3.2 rejects the property outright with `DELTA_UNKNOWN_CONFIGURATION`, so a line
+that set it would be a line this repo could not have tested.
 
 > Source for the default, since nothing else in this repo states it:
 > [Optimize Delta Lake tables with V-Order in Fabric](https://learn.microsoft.com/fabric/data-engineering/delta-optimization-and-v-order),
