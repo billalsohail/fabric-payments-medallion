@@ -16,3 +16,6 @@ derby.log
 dashboard/out/
 *.log
 .DS_Store
+
+# Written by `make test PYTEST_ARGS=--junitxml=...`, which is what CI runs.
+junit.xml

@@ -1,0 +1,144 @@
+# The verification that replaces a live Fabric demo.
+#
+# There is no Fabric tenant behind this repo (see the README status box), so "it works" cannot be
+# shown by opening a workspace. It is shown here instead: a cold runner clones the repo, generates
+# the source feeds from a seed, runs all three medallion stages, runs them again to prove the rerun
+# is a no-op, and then runs every test. Nothing is carried over between the pipeline and the
+# assertions — the run that produces the numbers is the run the tests read.
+#
+# Two claims are kept apart, exactly as docs/gold-execution.md keeps them apart:
+#
+#   `make lint` carries the *portability* claim — every .sql file parses and uses only the documented
+#   Fabric Warehouse T-SQL subset. It runs first and costs seconds, because a dialect violation
+#   should not wait behind ten minutes of Spark.
+#
+#   `make idempotency` and `make test` carry the *correctness* claim — the logic produces the right
+#   numbers, and produces them again. Neither says anything about Fabric.
+#
+# The step that looks like paranoia and is not: "assert the suite actually ran". tests/conftest.py
+# skips the entire session when landing data is missing, which is right locally (one clear message
+# instead of 196 confusing failures) and is a trap in CI, where a skipped session is a green tick. A
+# green build that proved nothing is worse than a red one, so the exit code is not trusted alone.
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# A newer push supersedes the one in flight; there is nothing to learn from a run against stale code.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: lint, run the pipeline twice, test
+    runs-on: ubuntu-latest
+    # The whole sequence is ~20 min: three pipeline runs and 196 tests, most of it Spark start-up
+    # paid once per JVM. Generous rather than tight — a timeout that fires on a slow runner is
+    # indistinguishable from a hang, and that is a bad half-hour to spend.
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Java 17: PySpark 3.5 does not support 21+, and this is the JVM the local build uses. Pinned
+      # rather than taking the runner default, because the runner default moves and "the CI JVM
+      # changed under us" is an unpleasant way to learn that.
+      - name: Set up Temurin 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Pinned to an exact version, not the major. setup-uv v10 removed the `enable-cache` and
+      # `cache-dependency-glob` inputs that earlier majors took, so "@v10" is not a stable interface
+      # to write against — an exact pin goes stale visibly instead of breaking silently, and the
+      # caching it dropped is done explicitly in the next step anyway.
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.2.0
+
+      # Two separate caches in one entry: the wheel cache (pyspark alone is a ~320 MB download) and
+      # uv's managed-interpreter directory, because `uv venv --python 3.11` fetches CPython 3.11 on a
+      # runner that ships something newer. Keyed on pyproject.toml, which is what pins every version.
+      - name: Cache uv downloads
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/uv
+            ~/.local/share/uv/python
+          key: uv-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: uv-${{ runner.os }}-
+
+      - name: Install (python 3.11, pinned Spark 3.5 / Delta 3.2)
+        run: make setup
+
+      # Seconds, and fails fast: ruff over the python, then the Fabric T-SQL subset linter over every
+      # file in src/warehouse/ — 41 rules, each citing the Microsoft Learn page it came from.
+      - name: Lint — ruff, and the Fabric Warehouse T-SQL subset
+        run: make lint
+
+      # SCALE=tiny: 50k transactions over 120 days. The span matters more than the row count here —
+      # 30 days would give only one monthly master-data snapshot (nothing for SCD2 to close out) and
+      # would truncate the 90-day dispute lag, so the two hardest mechanisms in the pipeline would go
+      # unexercised by the profile that exists to exercise them. See docs/data-contracts.md, "Scale".
+      - name: Generate the source feeds
+        run: make generate SCALE=tiny
+
+      - name: Seed the metadata control plane
+        run: make seed
+
+      # Cold start, then a rerun, then a forced reload, then the bronze assertions. The most
+      # important step in this file: it is the only one that can fail because of *state* rather than
+      # logic, and state bugs are the ones that survive a unit-test suite.
+      - name: Run the pipeline twice — cold, then idempotent
+        run: make idempotency
+
+      - name: Test
+        run: make test PYTEST_ARGS='-q --junitxml=junit.xml'
+
+      # See the header. A session-level skip exits 0.
+      - name: Assert the suite actually ran
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          report = Path("junit.xml")
+          if not report.exists():
+              sys.exit("junit.xml is missing — pytest did not get far enough to write a report.")
+
+          total = skipped = failures = errors = 0
+          for suite in ET.parse(report).getroot().iter("testsuite"):
+              total    += int(suite.get("tests", 0))
+              skipped  += int(suite.get("skipped", 0))
+              failures += int(suite.get("failures", 0))
+              errors   += int(suite.get("errors", 0))
+
+          print(f"{total} test(s): {failures} failed, {errors} errored, {skipped} skipped")
+
+          # A floor, not the exact count, so that adding a test does not fail the build. It is here
+          # to catch a collection that returned almost nothing — the failure the exit code hides.
+          FLOOR = 150
+          problems = []
+          if total < FLOOR:
+              problems.append(f"only {total} test(s) ran; expected at least {FLOOR}. "
+                              "A session-level skip (missing landing data?) exits 0.")
+          if skipped:
+              problems.append(f"{skipped} test(s) skipped. This suite has no legitimate skips, so a "
+                              "skip here is an environment problem wearing a green badge.")
+          if failures or errors:
+              problems.append(f"{failures} failure(s), {errors} error(s).")
+          if problems:
+              sys.exit("\n".join(problems))
+          PY
+
+      - name: Upload the test report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: junit
+          path: junit.xml
+          if-no-files-found: warn
