@@ -1,0 +1,12 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/platform/platformProperties.json",
+  "metadata": {
+    "type": "Lakehouse",
+    "displayName": "lh_silver",
+    "description": "Conformed, deduplicated, DQ-gated Delta. SCD2 dimensions and incremental facts. Layer.SILVER."
+  },
+  "config": {
+    "logicalId": "24a90948-7c79-45ca-b52c-2816f4721f36"
+  },
+  "version": "2.0"
+}

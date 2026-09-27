@@ -1,0 +1,12 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/platform/platformProperties.json",
+  "metadata": {
+    "type": "DataPipeline",
+    "displayName": "pl_master",
+    "description": "Lookup -> ForEach -> Notebook -> Stored procedure. orchestration/run.py is the local stand-in."
+  },
+  "config": {
+    "logicalId": "cf3bb4ce-4f6c-449b-a371-a8a9c1f52d9b"
+  },
+  "version": "2.0"
+}

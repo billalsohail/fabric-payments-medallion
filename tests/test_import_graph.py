@@ -50,11 +50,17 @@ LAYERS: list[tuple[str, tuple[str, ...]]] = [
     ("orchestration", ("src.runtime", "src.lib", "src.notebooks")),
     ("dashboard", ("src.runtime", "src.lib", "tools")),
     ("tools", ()),
+    # `fabric/` is the deployment layer, and `()` is a stronger claim than it looks. `build_items.py`
+    # reads `src/notebooks/*.py` to re-render them in Fabric's own cell format — as *text*, with a
+    # parser of its own, never by importing them. That is what lets it run without Spark, without a
+    # warehouse, and without the shim; and it is why the one directory in this repo that has never
+    # been executed against its target platform cannot drag any of the executed code along with it.
+    ("fabric", ()),
 ]
 
 # Packages that are part of this repo. An import of anything else is a third-party or stdlib import
 # and is not this test's business.
-INTERNAL = ("src", "orchestration", "tools", "dashboard", "tests")
+INTERNAL = ("src", "orchestration", "tools", "dashboard", "tests", "fabric")
 
 # Directories that hold no source of ours: virtualenvs, caches, and the local lake itself.
 SKIP_DIRS = frozenset({".venv", "venv", "_onelake", "__pycache__", "build", ".git", ".ruff_cache",
@@ -89,9 +95,22 @@ def _internal_imports(path: Path) -> list[tuple[str, int]]:
 
 
 def _modules() -> list[Path]:
+    """Every source file in a declared layer — and nothing a layer merely contains.
+
+    The `SKIP_DIRS` filter is load-bearing here rather than tidy. `fabric/build/` holds generated
+    `notebook-content.py` files whose imports are copies of the notebooks', and checking those would
+    mean asserting the graph twice over the same edges while reporting failures against a path that
+    is not in git and cannot be edited. The generator is the file under test; its output is not.
+    """
     out: list[Path] = []
     for layer, _ in LAYERS:
-        out.extend(sorted((ROOT / layer).rglob("*.py")))
+        out.extend(
+            sorted(
+                p
+                for p in (ROOT / layer).rglob("*.py")
+                if not any(part in SKIP_DIRS for part in p.relative_to(ROOT).parts)
+            )
+        )
     return out
 
 

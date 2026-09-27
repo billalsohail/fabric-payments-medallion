@@ -24,7 +24,8 @@ ARGS    ?=
 MAINTAIN_ARGS ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help setup generate seed run maintain idempotency test test-fast lint dashboard clean reset-lake all
+.PHONY: help setup generate seed run maintain idempotency test test-fast lint dashboard
+.PHONY: fabric-build clean reset-lake all
 
 help:  ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -64,6 +65,9 @@ run: setup  ## Run bronze, silver and gold (mirrors the pl_master Fabric pipelin
 maintain: setup  ## OPTIMIZE + VACUUM the lakehouse Delta tables (MAINTAIN_ARGS=...)
 	$(PY) src/notebooks/nb_03_table_maintenance.py $(MAINTAIN_ARGS)
 
+fabric-build:  ## Render fabric/items/ into the git-integration layout (UNVALIDATED)
+	$(PY) fabric/build_items.py
+
 # Proves the property the whole design rests on: a rerun of a completed load is a no-op, and a
 # forced reload replaces its batch rather than duplicating it. Two distinct mechanisms, so both
 # are exercised — see docs/design-decisions.md.
@@ -95,7 +99,7 @@ test-fast: setup  ## Test suite without the end-to-end/slow cases
 # lint` could not fail, and neither could the CI step that runs it. src/warehouse is committed now,
 # so the guard has nothing left to guard and the failure path is all it ever affected.
 lint: setup  ## Ruff, Fabric T-SQL subset linter, and the measures.dax drift check
-	$(VENV)/bin/ruff check src orchestration tools tests dashboard
+	$(VENV)/bin/ruff check src orchestration tools tests dashboard fabric
 	$(PY) tools/fabric_tsql_lint.py src/warehouse
 	$(PY) tools/extract_dax.py --check
 

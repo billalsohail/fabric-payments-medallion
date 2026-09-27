@@ -1,0 +1,12 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/platform/platformProperties.json",
+  "metadata": {
+    "type": "Lakehouse",
+    "displayName": "lh_quarantine",
+    "description": "Rejected rows with the rule that caught them, one q_<entity> table per feed. Layer.QUARANTINE."
+  },
+  "config": {
+    "logicalId": "f26e4739-6b1c-4937-ae54-45479a055cab"
+  },
+  "version": "2.0"
+}

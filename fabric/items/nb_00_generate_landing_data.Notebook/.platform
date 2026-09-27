@@ -1,0 +1,12 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/platform/platformProperties.json",
+  "metadata": {
+    "type": "Notebook",
+    "displayName": "nb_00_generate_landing_data",
+    "description": "Deterministic synthetic payments generator. Seeded; --scale tiny|demo. Not a production item."
+  },
+  "config": {
+    "logicalId": "d47f72b7-bc2e-4ab9-aab9-2895f57f127b"
+  },
+  "version": "2.0"
+}

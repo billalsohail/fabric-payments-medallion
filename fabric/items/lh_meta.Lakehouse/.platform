@@ -1,0 +1,12 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/platform/platformProperties.json",
+  "metadata": {
+    "type": "Lakehouse",
+    "displayName": "lh_meta",
+    "description": "The metadata control plane: six Delta tables seeded by nb_99_seed_metadata. Layer.META."
+  },
+  "config": {
+    "logicalId": "129aa2e6-150a-4ed4-a94a-6c8f2d69dc1e"
+  },
+  "version": "2.0"
+}

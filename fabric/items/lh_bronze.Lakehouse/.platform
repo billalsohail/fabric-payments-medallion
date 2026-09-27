@@ -1,0 +1,12 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/platform/platformProperties.json",
+  "metadata": {
+    "type": "Lakehouse",
+    "displayName": "lh_bronze",
+    "description": "Append-only Delta landing zone. Also holds Files/landing/. Layer.BRONZE in src/runtime/context.py."
+  },
+  "config": {
+    "logicalId": "732ec09e-5b9e-49d0-9f20-a4a071b5e6ad"
+  },
+  "version": "2.0"
+}

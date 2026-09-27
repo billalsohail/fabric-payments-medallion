@@ -1,0 +1,12 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/platform/platformProperties.json",
+  "metadata": {
+    "type": "Notebook",
+    "displayName": "nb_99_seed_metadata",
+    "description": "Seeds the control plane. Run once per workspace before pl_master."
+  },
+  "config": {
+    "logicalId": "7309a5be-d465-43bd-853c-1e453ece64a0"
+  },
+  "version": "2.0"
+}

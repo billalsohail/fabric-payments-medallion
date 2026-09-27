@@ -1,0 +1,12 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/platform/platformProperties.json",
+  "metadata": {
+    "type": "Notebook",
+    "displayName": "nb_02_silver_transform",
+    "description": "Dedupe, cast, DQ, then SCD2 merge or watermark-incremental MERGE. One notebook, seven feeds."
+  },
+  "config": {
+    "logicalId": "c43d61f8-2a52-4f6f-b6da-8bc893556ee0"
+  },
+  "version": "2.0"
+}

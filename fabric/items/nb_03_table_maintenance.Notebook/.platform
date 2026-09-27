@@ -1,0 +1,12 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/platform/platformProperties.json",
+  "metadata": {
+    "type": "Notebook",
+    "displayName": "nb_03_table_maintenance",
+    "description": "OPTIMIZE and VACUUM over the Delta layers, logged per table. Scheduled, not a pipeline stage."
+  },
+  "config": {
+    "logicalId": "700af324-b184-4e42-a141-dc52ade2ecfc"
+  },
+  "version": "2.0"
+}

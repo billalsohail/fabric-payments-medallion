@@ -1,0 +1,41 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/variableLibrary/definition/variables/1.0.0/schema.json",
+  "variables": [
+    {
+      "name": "FABRIC_LAKEHOUSE_PREFIX",
+      "note": "Read by RuntimeConfig.lakehouse_prefix in src/runtime/context.py, where it is also an environment variable with this exact name. Stage-invariant by design.",
+      "type": "String",
+      "value": "lh_"
+    },
+    {
+      "name": "SilverLakehouse",
+      "note": "The silver lakehouse pl_master stages from, as @pipeline().libraryVariables.SilverLakehouse. String rather than ItemReference: see this directory's README.",
+      "type": "String",
+      "value": "lh_silver"
+    },
+    {
+      "name": "GoldWarehouse",
+      "note": "The warehouse pl_master's stored-procedure activities target. String rather than ItemReference: see this directory's README.",
+      "type": "String",
+      "value": "wh_gold"
+    },
+    {
+      "name": "LandingRoot",
+      "note": "OneLake Files/ path that landing_path() resolves against. Stage-invariant by design.",
+      "type": "String",
+      "value": "Files/landing"
+    },
+    {
+      "name": "Parallelism",
+      "note": "pl_master's ForEach batchCount. One of the two variables that genuinely differs by stage.",
+      "type": "Integer",
+      "value": 4
+    },
+    {
+      "name": "Scale",
+      "note": "nb_00_generate_landing_data's --scale. The empty string is not a scale and nb_00 raises on it, which is how prod refuses to fabricate data. See this directory's README.",
+      "type": "String",
+      "value": "tiny"
+    }
+  ]
+}

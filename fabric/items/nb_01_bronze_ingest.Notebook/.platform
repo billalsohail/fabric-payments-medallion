@@ -1,0 +1,12 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/platform/platformProperties.json",
+  "metadata": {
+    "type": "Notebook",
+    "displayName": "nb_01_bronze_ingest",
+    "description": "One notebook, seven feeds, no per-entity branch. Driven entirely by meta_source_config."
+  },
+  "config": {
+    "logicalId": "ffdc1828-148d-4efc-8743-921eef3be14b"
+  },
+  "version": "2.0"
+}

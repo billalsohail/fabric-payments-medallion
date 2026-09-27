@@ -1,0 +1,12 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/platform/platformProperties.json",
+  "metadata": {
+    "type": "VariableLibrary",
+    "displayName": "vl_payments",
+    "description": "One value set per stage. docs/fabric-deployment.md section 6 is the table these files encode."
+  },
+  "config": {
+    "logicalId": "4eb84cf6-c114-4cc1-925d-c16e3599c754"
+  },
+  "version": "2.0"
+}
