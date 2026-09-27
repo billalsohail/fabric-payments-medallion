@@ -10,7 +10,7 @@ Fabric notebook code; it runs on a laptop.
 > ### Status
 >
 > **What runs:** landing → bronze → silver → gold, end-to-end, from a cold start, on PySpark 3.5 /
-> Delta 3.2 — the same pairing as the Fabric Spark runtime. 312 tests pass locally, including
+> Delta 3.2 — the same pairing as the Fabric Spark runtime. 381 tests pass locally, including
 > run-it-twice idempotency, SCD2 interval invariants, a reconciliation that ties every bronze row to
 > a silver row, a quarantined row or a deduplicated one, and a second reconciliation in which every
 > difference between silver and the star schema is enumerated and attributed to a named cause.
@@ -163,7 +163,7 @@ make generate SCALE=tiny    # deterministic landing files under ./_onelake/files
 make seed                   # the metadata control plane: config, DQ rules, watermarks
 make run                    # bronze, silver, gold — driven entirely by meta_source_config
 make run                    # run it again — this is the interesting one
-make test                   # 312 tests
+make test                   # 381 tests
 make maintain               # OPTIMIZE + VACUUM the Delta layers, on its own schedule
 make fabric-build           # render fabric/items/ into the git-integration layout (UNVALIDATED)
 ```
@@ -353,7 +353,7 @@ rather than emitting a zero-width row that no point-in-time join could ever retu
 
 ## 7. What the tests actually prove
 
-`make test` — 312 tests. The ones that matter:
+`make test` — 381 tests. The ones that matter:
 
 | Claim | Test |
 |---|---|
@@ -401,6 +401,7 @@ rather than emitting a zero-width row that no point-in-time join could ever retu
 | The three deliberate absences in `fabric/` stay absent | `test_the_warehouse_is_deliberately_not_an_item`, `test_the_pipeline_is_an_item_without_a_body`, `test_there_is_no_parameter_yml` |
 | The variable library is exactly the table `docs/fabric-deployment.md` §6 publishes, value for value | `test_variable_defaults_are_the_dev_column_of_the_documented_table`, `test_a_value_set_overrides_only_what_actually_differs` |
 | Rendering a notebook into Fabric's cell format loses no cell and invents none | `test_the_render_round_trips_back_to_the_same_cells` |
+| Every path these documents cite is a path that exists, and every link resolves | `test_citations.py` — written last, with no allowlist, because an allowlist would have contained the one citation that was false |
 
 Three notes on how these are written, because they are the difference between a suite that checks
 the work and one that agrees with it:
@@ -526,9 +527,11 @@ fabric/build_items.py         Renders those into Fabric's git-integration layout
 fabric/deploy.py              The fabric-cicd wrapper. Never executed. --dry-run is the only mode
                               anything in this repo has ever proven.
 
-tests/                        312 tests. conftest.py builds an isolated lake per module.
+tests/                        381 tests. conftest.py builds an isolated lake per module.
 tests/test_import_graph.py    The one test whose subject is a document: it enforces the import
                               graph docs/architecture.md §1 describes.
+tests/test_citations.py       The other one: every path cited in prose has to exist. It is the last
+                              test in the repo, and it says why it was written last.
 ```
 
 If you are reviewing this and have ten minutes, read in this order: the header of
