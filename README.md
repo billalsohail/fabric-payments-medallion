@@ -8,7 +8,7 @@ Fabric notebook code; it runs on a laptop.
 > ### Status
 >
 > **What runs:** landing → bronze → silver → gold, end-to-end, from a cold start, on PySpark 3.5 /
-> Delta 3.2 — the same pairing as the Fabric Spark runtime. 196 tests pass locally, including
+> Delta 3.2 — the same pairing as the Fabric Spark runtime. 197 tests pass locally, including
 > run-it-twice idempotency, SCD2 interval invariants, a reconciliation that ties every bronze row to
 > a silver row, a quarantined row or a deduplicated one, and a second reconciliation in which every
 > difference between silver and the star schema is enumerated and attributed to a named cause.
@@ -126,7 +126,7 @@ make generate SCALE=tiny    # deterministic landing files under ./_onelake/files
 make seed                   # the metadata control plane: config, DQ rules, watermarks
 make run                    # bronze, silver, gold — driven entirely by meta_source_config
 make run                    # run it again — this is the interesting one
-make test                   # 196 tests
+make test                   # 197 tests
 ```
 
 The second `make run` is the point. It should do almost nothing, and say so:
@@ -313,7 +313,7 @@ rather than emitting a zero-width row that no point-in-time join could ever retu
 
 ## 7. What the tests actually prove
 
-`make test` — 196 tests. The ones that matter:
+`make test` — 197 tests. The ones that matter:
 
 | Claim | Test |
 |---|---|
@@ -385,11 +385,12 @@ Honest, because the alternative is worse. Three days were budgeted; this is the 
 | DQ rule engine, SCD2, type contracts | **Done**, tested |
 | Silver transform, all seven feeds | **Done**, tested |
 | Gold: star-schema DDL + 10 load procedures | **Done**; logic executed and reconciled, dialect linted, never run by a T-SQL engine ([`docs/gold-execution.md`](docs/gold-execution.md)) |
-| `tools/fabric_tsql_lint.py` — Fabric T-SQL subset linter | **Done**, 69 tests, 41 rules, each citing the Microsoft Learn page and `ms.date` it came from |
+| `tools/fabric_tsql_lint.py` — Fabric T-SQL subset linter | **Done**, 70 tests, 41 rules, each citing the Microsoft Learn page and `ms.date` it came from |
 | CI (`.github/workflows/ci.yml`) | Not written — **the status box will say "verified in CI" only once it is** |
 | Semantic model (TMDL + DAX), static dashboard | Not written |
 | `fabric/` deployment artefacts + runbook | Not written; will be labelled UNVALIDATED in every file |
-| `docs/architecture.md`, `design-decisions.md`, `databricks-to-fabric.md`, `cost-and-capacity.md`, `fabric-tsql-subset.md` | Not written |
+| [`docs/fabric-tsql-subset.md`](docs/fabric-tsql-subset.md) | **Done** — the rules, the Learn pages they came from, the four corrections those pages forced, and what the linter cannot tell you |
+| `docs/architecture.md`, `design-decisions.md`, `databricks-to-fabric.md`, `cost-and-capacity.md` | Not written |
 
 Beyond this build, the honest list of what a production version needs and this does not have:
 live-tenant validation; streaming ingestion (Eventstream → Eventhouse) for authorisations; Purview
@@ -404,6 +405,8 @@ and a retention and disaster-recovery story.
 ```
 docs/data-contracts.md        The frozen contract: seven schemas, and the injected defect rates.
                               Start here. Everything else answers to this page.
+docs/fabric-tsql-subset.md    The Fabric Warehouse T-SQL subset the linter enforces, where each rule
+                              came from, and what a clean lint does not prove.
 docs/gold-execution.md        What executes the gold T-SQL with no tenant, and what that entitles
                               a reader to believe about it. Read before src/warehouse/.
 
@@ -431,7 +434,7 @@ src/warehouse/procs/          The ten load procedures. The gold deliverable.
 tools/fabric_tsql_lint.py     The portability gate: 41 Fabric Warehouse subset rules over sqlglot.
 
 orchestration/run.py          Local stand-in for the pl_master Fabric pipeline, all three stages.
-tests/                        196 tests. conftest.py builds an isolated lake per module.
+tests/                        197 tests. conftest.py builds an isolated lake per module.
 ```
 
 If you are reviewing this and have ten minutes, read in this order: the header of

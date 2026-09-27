@@ -40,7 +40,7 @@
 -- `CREATE USER` / `CREATE LOGIN`. Fabric does not work that way: principals are Entra
 -- identities granted access to the workspace or item, and they appear to T-SQL without being
 -- created by it. A script that tried to create them would fail, and tools/fabric_tsql_lint.py
--- rejects both (FB010). This is one of the sharper differences from SQL Server and a fair thing
+-- rejects both (FB008). This is one of the sharper differences from SQL Server and a fair thing
 -- to be asked about.
 --
 -- Deployment order: last. Every object referenced here must already exist, and `WITH

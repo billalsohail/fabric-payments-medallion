@@ -5,8 +5,9 @@
 -- only form Fabric Data Warehouse accepts.** `PRIMARY KEY` and `UNIQUE` must be declared
 -- `NONCLUSTERED NOT ENFORCED`; `FOREIGN KEY` must be declared `NOT ENFORCED`; `CHECK`,
 -- `DEFAULT` and computed columns do not exist at all. tools/fabric_tsql_lint.py enforces this
--- (FB102, FB103, FB104), which is why the line holds across the whole repo rather than only
--- where someone remembered.
+-- (FB301, FB302 and FB303 for the constraints; FB104 and FB103 for DEFAULT and computed
+-- columns), which is why the line holds across the whole repo rather than only where someone
+-- remembered.
 --
 -- So what are these declarations *for*, if the engine will not police them?
 --

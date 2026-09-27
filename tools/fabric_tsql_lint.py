@@ -205,6 +205,12 @@ BANNED_SEQUENCES: list[tuple[str, tuple[str, ...], str, str, str]] = [
     ("FB008", ("create", "user"),
      "CREATE USER is not supported; Fabric uses Entra ID identities and workspace roles",
      "surface-area", ERROR),
+    # Same code and same reason: a login is a server-level principal, and Fabric has no server to
+    # hold one. Both halves of the pair are needed, because the habit being caught is "create the
+    # principal, then grant it" — and catching only the second statement lets the first through.
+    ("FB008", ("create", "login"),
+     "CREATE LOGIN is not supported; Fabric principals are Entra ID identities, not server logins",
+     "surface-area", ERROR),
     ("FB009", ("set", "rowcount"), "SET ROWCOUNT is not supported; use TOP", "surface-area", ERROR),
     ("FB010", ("set", "transaction", "isolation", "level"),
      "SET TRANSACTION ISOLATION LEVEL is not supported (Warehouse is snapshot isolation)",

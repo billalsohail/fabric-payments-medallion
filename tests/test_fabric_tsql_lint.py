@@ -311,3 +311,15 @@ def test_a_block_comment_cannot_shred_a_statement() -> None:
 def test_a_comment_marker_inside_a_string_is_not_a_comment() -> None:
     sql = "CREATE TABLE dbo.t (a bigint);\nSELECT '-- /* not a comment */' AS note, 1 AS n;\n"
     assert not lint_sql(sql, "t.sql")
+
+
+def test_create_login_is_rejected_like_create_user() -> None:
+    """The pair, not just the half of it that is easy to remember.
+
+    `src/warehouse/ddl/05_security.sql` states that the linter rejects both `CREATE USER` and
+    `CREATE LOGIN`. It cited the wrong rule code and only the first statement was actually caught,
+    which is the worst shape a claim about a tool can take: documented, plausible, and false. Fabric
+    has no server-level principals at all — both are FB008.
+    """
+    assert {f.rule for f in lint_sql("CREATE USER u FROM EXTERNAL PROVIDER;", "t.sql")} == {"FB008"}
+    assert {f.rule for f in lint_sql("CREATE LOGIN l WITH PASSWORD = 'x';", "t.sql")} == {"FB008"}
