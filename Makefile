@@ -72,8 +72,8 @@ dashboard: setup  ## Build the static dashboard (stand-in for the Direct Lake re
 
 # Deletes the lake but never the landing files: regenerating those costs ~40s and they are the
 # stand-in for source systems, which a pipeline is not entitled to delete.
-reset-lake:  ## Drop bronze/silver/meta/quarantine, keep landing
-	rm -rf _onelake/bronze _onelake/silver _onelake/meta _onelake/quarantine
+reset-lake:  ## Drop bronze/silver/gold/meta/quarantine, keep landing
+	rm -rf _onelake/bronze _onelake/silver _onelake/gold _onelake/meta _onelake/quarantine
 	@echo "lake reset — landing preserved. Run 'make seed' next."
 
 clean:  ## Remove the venv, caches and the entire local lake

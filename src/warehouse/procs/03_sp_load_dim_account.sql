@@ -73,10 +73,19 @@
 -- changing when it took effect. Without the hash in the predicate gold would keep the old
 -- attribute values forever, and nothing would report a difference, because the interval matched.
 --
--- There is deliberately no WHEN NOT MATCHED BY SOURCE branch. Staging holds one batch, not the
--- whole dimension, so "absent from source" means "not in this batch" and deleting on it would
--- empty the dimension. It is also why the -1 unknown member survives: no staged row carries
--- account_id 'UNKNOWN', so it never matches, and nothing deletes it.
+-- There is deliberately no WHEN NOT MATCHED BY SOURCE branch, and the reason is not the one you
+-- would expect. stg.dim_account is staged in *full* (src/lib/gold.py declares the mode, because
+-- SCD2 close-out does not restamp _batch_id, so there is no batch column that identifies a batch's
+-- close-outs), so "absent from source" really does mean "absent from silver" and the branch would
+-- not empty the dimension today.
+--
+-- It is omitted for two other reasons. First, the one row it would delete is the -1 unknown member:
+-- no staged row carries account_id 'UNKNOWN', so it is absent from source by construction, and
+-- every fact with an unresolved account points at it. Second, and more importantly, including the
+-- branch would make this proc's correctness depend on the staging mode — a property declared in a
+-- Python module, enforced by nothing in this file, and reasonable to change. A MERGE that is
+-- correct only for full staging is a trap for whoever switches it. Gold accumulates; silver is the
+-- source of what changed, not of what still exists.
 -- =====================================================================================
 
 CREATE PROCEDURE dbo.sp_load_dim_account

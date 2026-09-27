@@ -76,6 +76,9 @@ PARAMS = params.resolve({
 ENTITY: str = PARAMS["entity"]
 BRONZE_PREFIX = "br_"
 
+# Validated, not dispatched on — see the window-selection note below.
+LOAD_TYPES = frozenset({"incremental_watermark", "full_snapshot", "static"})
+
 # %% [markdown]
 # ## Config lookup
 #
@@ -98,12 +101,30 @@ load_config = config.load_source_config
 # | `load_type` | Candidates | Effect once the watermark filter is applied |
 # |---|---|---|
 # | `incremental_watermark` | every available partition | only genuinely new days |
-# | `full_snapshot` | the newest partition only | the latest snapshot, once |
+# | `full_snapshot` | every available partition | each snapshot, exactly once |
 # | `static` | every available partition | everything on first load, nothing after |
 #
-# `full_snapshot` takes only the newest partition because older snapshots of master data are
-# superseded, not additive — loading all of them would put four copies of every customer in bronze
-# for a 120-day feed, and silver would then have to guess which is current.
+# Every row of that table says "every available partition", which makes it look redundant. It is
+# kept because the redundancy is the claim: **bronze does not decide which partitions still matter.**
+#
+# An earlier version of this notebook took `[available[-1]]` for `full_snapshot`, on the reasoning
+# that older snapshots of master data are superseded rather than additive. That reasoning is wrong
+# for a feed silver turns into an SCD2 dimension: the sequence of snapshots *is* the history.
+# Discarding all but the newest left `dim_merchant` and `dim_customer` with one version per key and
+# no transitions at all — while still producing dimensions that pass every obvious test, because one
+# current row per key is exactly what a reviewer checks. The defect surfaced two layers later, in
+# gold, as 78% of facts resolving to the unknown member because no dimension version covered their
+# authorisation date.
+#
+# It survived as long as it did because it is invisible in steady state: run monthly from day one and
+# each run sees exactly one new snapshot, so "the newest" and "all of them" agree. They diverge only
+# on a cold start over existing history — which is the one way this repo is ever run, and the way a
+# real backfill is run too.
+#
+# Deciding that an older partition no longer matters is a judgement about what the data *means*, and
+# bronze has no business logic by construction (see the header). `load_type` must still be a
+# recognised value, because an unknown one is a deployment mistake rather than something to default
+# through — but what it drives is silver's interpretation, not bronze's read.
 
 # %%
 def select_window(cfg: dict, until_date: str, force_reload: bool) -> tuple[list[str], str | None]:
@@ -114,16 +135,12 @@ def select_window(cfg: dict, until_date: str, force_reload: bool) -> tuple[list[
     if not available:
         return [], None
 
-    load_type = cfg["load_type"]
-    if load_type == "full_snapshot":
-        candidates = [available[-1]]
-    elif load_type in ("incremental_watermark", "static"):
-        candidates = available
-    else:
+    if cfg["load_type"] not in LOAD_TYPES:
         raise ValueError(
-            f"unknown load_type {load_type!r} for {entity}. "
-            "Expected one of: incremental_watermark, full_snapshot, static."
+            f"unknown load_type {cfg['load_type']!r} for {entity}. "
+            f"Expected one of: {', '.join(sorted(LOAD_TYPES))}."
         )
+    candidates = available
 
     wm = None if force_reload else watermark.get(entity)
     if wm is not None:

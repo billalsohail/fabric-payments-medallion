@@ -262,6 +262,23 @@ def warehouse_tables() -> dict[str, TableSpec]:
     return out
 
 
+def _registered_location(schema: str) -> Path | None:
+    """Where the Spark catalog currently thinks `schema` lives, or None if it is not registered.
+
+    The Spark catalog is per *session* while `gold_root()` is per `ONELAKE_ROOT`, so the two can
+    disagree — and every function that writes or drops has to ask before acting. See the callers.
+    """
+    spark = get_spark()
+    if not spark.catalog.databaseExists(schema):
+        return None
+    got = next(
+        r["info_value"]
+        for r in spark.sql(f"DESCRIBE DATABASE EXTENDED {schema}").collect()
+        if r["info_name"] == "Location"
+    )
+    return Path(got.removeprefix("file:")).resolve()
+
+
 def ensure_schema() -> list[str]:
     """Create the Spark databases and the Delta tables, idempotently.
 
@@ -274,22 +291,17 @@ def ensure_schema() -> list[str]:
     for schema in SCHEMAS:
         want = gold_root() / schema
         spark.sql(f"CREATE DATABASE IF NOT EXISTS {schema} LOCATION '{want}'")
-        # `IF NOT EXISTS` is silent about the LOCATION when the database already exists, and the
-        # Spark catalog is per *session* while `gold_root()` is per `ONELAKE_ROOT`. So a test that
-        # repoints the runtime at a temporary lake and calls this function gets a `dbo` still
+        # `IF NOT EXISTS` is silent about the LOCATION when the database already exists, so a test
+        # that repoints the runtime at a temporary lake and calls this function gets a `dbo` still
         # pointing at the committed `_onelake/gold/` — and then writes the demo warehouse. Nothing
         # about that failure looks like a failure, so the location is read back and checked.
-        got = next(
-            r["info_value"]
-            for r in spark.sql(f"DESCRIBE DATABASE EXTENDED {schema}").collect()
-            if r["info_name"] == "Location"
-        )
-        if Path(got.removeprefix("file:")).resolve() != want.resolve():
+        got = _registered_location(schema)
+        if got != want.resolve():
             raise GoldError(
                 f"database {schema} is registered at {got}, but this lake's gold root is {want}. "
-                "The Spark catalog outlives a change of ONELAKE_ROOT; call gold.drop_gold() (or "
-                "DROP DATABASE) before pointing the runtime at a different lake, or the load will "
-                "write into the wrong warehouse."
+                "The Spark catalog outlives a change of ONELAKE_ROOT; call gold.drop_gold() before "
+                "pointing the runtime at a different lake, or the load will write into the wrong "
+                "warehouse."
             )
     created = []
     for spec in warehouse_tables().values():
@@ -300,11 +312,26 @@ def ensure_schema() -> list[str]:
 
 
 def drop_gold() -> None:
-    """Delete the gold tables and their data. Used by the tests and by `make run --rebuild`."""
+    """Delete the gold tables and their data. Used by the tests and by `make run --rebuild`.
+
+    Refuses a schema the catalog has registered somewhere other than this lake's gold root. That is
+    the mirror of the guard in `ensure_schema`, and it is here for the same reason: the caller that
+    most needs to drop gold is a test that has just repointed `ONELAKE_ROOT`, which is exactly the
+    situation in which the registration still names the committed warehouse. Unregistering that one
+    is recoverable — `ensure_schema` re-attaches it — but the `rmtree` below is not, and a function
+    whose safety depends on which of its two halves runs first is not safe.
+    """
     spark = get_spark()
+    want = gold_root().resolve()
     for schema in SCHEMAS:
+        got = _registered_location(schema)
+        if got is not None and got != want / schema:
+            raise GoldError(
+                f"refusing to drop {schema}: it is registered at {got}, not under this lake's gold "
+                f"root {want}. Drop it while ONELAKE_ROOT still points at that lake."
+            )
         spark.sql(f"DROP DATABASE IF EXISTS {schema} CASCADE")
-    shutil.rmtree(gold_root(), ignore_errors=True)
+    shutil.rmtree(want, ignore_errors=True)
 
 
 # --------------------------------------------------------------------------------------

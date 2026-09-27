@@ -8,10 +8,14 @@
 --
 -- 1. IT READS THE WHOLE OF SILVER, NOT ONE BATCH
 --
--- Every other proc treats stg.* as "the rows that changed in this batch". stg.dim_fx_rate is
--- loaded in full by the bridge in src/lib/gold.py, and that is a deliberate, documented difference
--- rather than an oversight — it is also the only staging table with that contract, so it is stated
--- here and asserted by tests/test_gold_recon.py.
+-- stg.dim_fx_rate is loaded in full by the bridge in src/lib/gold.py. Five of the seven staging
+-- tables are, so "reads the whole of silver" is not what makes this proc unusual — *why* it reads
+-- the whole of silver is. The three SCD2 dimensions are staged in full for an incidental reason: a
+-- close-out does not restamp the batch column, so there is no value that identifies a batch's
+-- close-outs and no way to select them. Narrow the batch column and they could be staged
+-- incrementally. This proc could not: it needs the whole history to compute anything at all, for
+-- the reason below. The contract is declared in src/lib/gold.py's STAGING table and asserted by
+-- tests/test_gold_recon.py::test_full_mode_staging_tables_hold_the_whole_silver_table.
 --
 -- The reason is the interval close. A rate's validity ends the day before the *next* rate for the
 -- same currency pair, and the next rate arrives in a later batch than the row it closes. So an

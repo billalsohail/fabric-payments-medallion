@@ -69,17 +69,30 @@ def test_incremental_and_static_feeds_land_every_source_row(bronze, entity, fmt,
 
 
 @pytest.mark.parametrize("entity", ["customers", "merchants"])
-def test_full_snapshot_feeds_load_only_the_newest_snapshot(bronze, entity):
-    """Master data arrives as repeated full snapshots; loading all of them would put four copies of
-    every customer in bronze and force silver to guess which is current."""
+def test_full_snapshot_feeds_load_every_snapshot(bronze, entity):
+    """A snapshot feed is not "the current state" to bronze — it is a sequence of observations.
+
+    This test replaces one that asserted the opposite (only the newest partition lands), which was
+    the codified form of a real defect: silver builds SCD2 history from the transitions *between*
+    snapshots, so keeping only the newest gave `dim_merchant` and `dim_customer` one version per key
+    and no history, and 78% of facts in gold then resolved to the unknown member. See `nb_01`'s
+    window-selection note.
+
+    Asserting the partition *set*, not just its size, because a count of four says nothing about
+    whether the four are the right four — an off-by-one in the window would satisfy a count.
+    """
     df = bronze_df(entity)
-    assert df.select("ingest_date").distinct().count() == 1
-    latest = max(p.name.split("=")[1]
-                 for p in Path(landing_path(entity)).iterdir() if p.is_dir())
-    # `ingest_date` is a date in bronze (cast explicitly in nb_01, not inferred), so compare
-    # formatted rather than relying on a str/date coincidence.
-    loaded = df.select(F.date_format("ingest_date", "yyyy-MM-dd").alias("d")).first()["d"]
-    assert loaded == latest
+    landed = {
+        r["d"] for r in df.select(F.date_format("ingest_date", "yyyy-MM-dd").alias("d")).distinct().collect()
+    }
+    available = {
+        p.name.split("=")[1] for p in Path(landing_path(entity)).iterdir() if p.is_dir()
+    }
+    assert landed == available
+    assert len(available) > 1, (
+        f"{entity} has only {len(available)} landing snapshot(s), so this test cannot distinguish "
+        "'every snapshot' from 'the newest snapshot' — check the generator's span."
+    )
 
 
 # ----------------------------------------------------------------------------------------

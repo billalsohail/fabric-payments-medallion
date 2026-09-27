@@ -38,11 +38,16 @@
 #
 # ## Batching: why a snapshot feed is loaded one snapshot at a time
 #
-# Bronze loads a `full_snapshot` feed as *the newest snapshot only* — deliberate, and covered by a
-# test. Silver cannot inherit that, because across monthly runs bronze accumulates several snapshots
-# and SCD2's whole purpose is the transitions between them. So silver processes a `full_snapshot`
-# SCD2 feed **one snapshot per batch, in ascending order**: a loop of one on a cold start, and the
-# correct history when there is more than one.
+# Bronze lands every snapshot that arrived, so a cold start over four months of monthly master data
+# puts four snapshots in `br_customers`. SCD2's whole purpose is the transitions between them, and a
+# transition is only visible if the snapshots are applied in order. So silver processes a
+# `full_snapshot` SCD2 feed **one snapshot per batch, in ascending order** — one batch in steady
+# state, and the correct history on a backfill.
+#
+# This notebook was written this way before bronze could actually supply more than one snapshot, and
+# was therefore correct and untested: bronze kept only the newest partition, so the loop always had
+# exactly one iteration and the ordering it depends on was never exercised. `nb_01`'s window-selection
+# note has the rest of that story.
 #
 # The alternative — hand `scd2.merge` every snapshot at once — is wrong in two independent ways. The
 # `unique` rule on `customer_id` is a per-snapshot statement, and eighteen snapshots of 50k customers
