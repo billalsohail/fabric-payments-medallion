@@ -537,3 +537,114 @@ def test_no_negative_measures_survived_into_the_aggregate(warehouse):
             OR approved_count > attempt_count
             OR approved_amount_gbp_minor > attempted_amount_gbp_minor
     """) == 0
+
+
+# --------------------------------------------------------------------------------------
+# The dashboard's arithmetic — verification item 8
+# --------------------------------------------------------------------------------------
+# `dashboard/build_dashboard.py` is a second implementation of the semantic model's measures, in SQL
+# and Python instead of DAX, and the repo tolerates that duplication only because it is fenced. Two
+# of the three fences are structural and live in `tests/test_dashboard.py`, which needs no Spark.
+# This is the third: the numbers themselves, recomputed by a path that shares no expression with the
+# dashboard's, against the warehouse this module has already loaded.
+#
+# "Shares no expression" is the whole requirement, and it is easy to get wrong. Re-running the
+# dashboard's own SQL would prove Spark is deterministic. So each check below reaches the same
+# figure through a different column: the approval count via `transaction_status` rather than
+# `SUM(is_approved)`, and the average approved value via `AVG` over the rows rather than a sum
+# divided by a count. Where the dashboard and the model agree by construction, a third path can
+# still disagree with both — and that is the only arrangement in which agreement means anything.
+#
+# These live here rather than in `tests/test_dashboard.py`, despite being what that file is named
+# after, because they need a loaded warehouse and this module already has one. Loading a second
+# identical warehouse to satisfy a filename would add about two minutes to every run of the suite.
+
+def _dash():
+    """The dashboard's own read of this module's warehouse.
+
+    Importing the module rather than shelling out to `make dashboard`: the target writes an HTML
+    file, and what needs checking is the arithmetic behind it, not the markup. `sys.path` needs the
+    `dashboard/` directory because it is a script directory and not a package — deliberately, since
+    nothing should import from it except this test.
+    """
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "dashboard"))
+    import build_dashboard as dash
+
+    return dash, dash.read_gold()
+
+
+def test_dashboard_authorisation_rate_agrees_with_an_independent_count(warehouse):
+    """`[Authorisation Rate]` = `DIVIDE([Approved Transactions], [Attempts])`, checked against a
+    count of `transaction_status = 'APPROVED'`.
+
+    The dashboard sums `is_approved`; the model's measure sums the same column. So a third path has
+    to avoid that column entirely, and `transaction_status` is the one that can — and it is not the
+    same expression wearing a different name. There is no `APPROVED` status. `is_approved` is a
+    *judgement*, made once in `07_sp_load_fact_transaction.sql`: AUTHORISED, CAPTURED and SETTLED
+    are all approvals, because all three are attempts the issuer said yes to, and REVERSED is
+    neither an approval nor a decline because it was authorised and then undone. That grouping is
+    the kind of thing that gets quietly widened by someone adding a status, and summing the flag can
+    never notice. Restating it here means a fourth approval-ish status has to be added in two
+    places, and disagreeing about it fails this test rather than moving the headline rate.
+    """
+    dash, g = _dash()
+    approved_by_status = one("""
+        SELECT COUNT(*) FROM dbo.fact_transaction
+         WHERE transaction_status IN ('AUTHORISED', 'CAPTURED', 'SETTLED')
+    """)
+    assert approved_by_status == g.txn["approved"], (
+        f"{approved_by_status} transactions carry an approving status but SUM(is_approved) is "
+        f"{g.txn['approved']} — the flag and the status disagree, so one of them is derived wrong. "
+        "If a new status was added, 07_sp_load_fact_transaction.sql and this test both need to "
+        "have an opinion about whether it is an approval"
+    )
+
+    attempts = one("SELECT COUNT(*) FROM dbo.fact_transaction")
+    assert dash.divide(approved_by_status, attempts) == dash.divide(g.txn["approved"], attempts)
+    rate = dash.divide(approved_by_status, attempts)
+    assert 0.5 < rate < 1.0, (
+        f"authorisation rate is {rate:.4f}. The generator targets the mid-80s, so anything outside "
+        "this range means the rate is not measuring what its name says"
+    )
+
+
+def test_dashboard_average_approved_value_is_in_pounds_not_pence(warehouse):
+    """`[Average Approved Value (GBP)]`, by `AVG` instead of SUM-over-COUNT — and the magnitude
+    check that the 100x defect would have failed.
+
+    This is the measure that caught the bug. Every money measure in the model once summed minor
+    units under a `\\£#,0.00` format string, on the belief that the format string divided by 100; it
+    does not, and cannot. Twenty-three structural tests passed throughout, because a format string
+    that formats the wrong magnitude is consistent with every structural property there is. What
+    failed was looking at the rendered page: it reported an average approved payment of £6,379.00.
+
+    So this test asserts two different things, and the second is the one that matters. The first is
+    that `AVG(amount_gbp_minor)` over approved rows agrees with the dashboard's
+    `SUM(...) / COUNT(...)` — arithmetic, and it held before the fix as well. The second is that the
+    result is a plausible card payment in pounds. The old model would have put £6,379.00 here and
+    failed on that line, which is the property worth having: a test that fails on the actual defect
+    rather than on a restatement of the code.
+    """
+    dash, g = _dash()
+    avg_minor = one("""
+        SELECT AVG(CAST(amount_gbp_minor AS DOUBLE))
+          FROM dbo.fact_transaction
+         WHERE transaction_status IN ('AUTHORISED', 'CAPTURED', 'SETTLED')
+    """)
+    by_avg = dash.pounds(avg_minor)
+    by_sum = dash.divide(dash.pounds(g.txn["approved_gbp_minor"]), g.txn["approved"])
+
+    # Float division of a sum against an average of the same rows; equal to well within a penny.
+    assert abs(by_avg - by_sum) < 0.005, (
+        f"AVG gives £{by_avg:.2f} and SUM/COUNT gives £{by_sum:.2f} for the same rows"
+    )
+
+    assert 5.0 < by_avg < 1000.0, (
+        f"average approved value is £{by_avg:,.2f}, which is not a card payment. Minor units are "
+        "pence: a figure a hundred times too large here means a money measure stopped dividing by "
+        "100, or started dividing twice. See the minor-units note in "
+        "semantic-model/definition/tables/dim_currency.tmdl"
+    )

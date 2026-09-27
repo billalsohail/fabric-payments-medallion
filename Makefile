@@ -79,7 +79,7 @@ test-fast: setup  ## Test suite without the end-to-end/slow cases
 # lint` could not fail, and neither could the CI step that runs it. src/warehouse is committed now,
 # so the guard has nothing left to guard and the failure path is all it ever affected.
 lint: setup  ## Ruff, Fabric T-SQL subset linter, and the measures.dax drift check
-	$(VENV)/bin/ruff check src orchestration tools tests
+	$(VENV)/bin/ruff check src orchestration tools tests dashboard
 	$(PY) tools/fabric_tsql_lint.py src/warehouse
 	$(PY) tools/extract_dax.py --check
 

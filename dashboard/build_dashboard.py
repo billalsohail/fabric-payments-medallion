@@ -33,8 +33,19 @@ two implementations of the same thing drift. Three things keep that bounded:
      choice is what makes this dashboard able to disagree with the model, which is the whole point
      of having it.
 
-`tests/test_dashboard.py` then recomputes two measures by a third, independent SQL path, which is
-verification item 8 of the project plan.
+Those three fences are what make the duplication survivable, and two of them are executable, so
+`tests/test_dashboard.py` executes them: every `_minor` column is formatted as an integer, a measure
+divides by 100 exactly when it sums one, `_format` has a renderer for every format string the model
+uses and no renderer the model has stopped using, and a tile naming an absent measure raises. That
+file needs no Spark and runs in milliseconds.
+
+The numbers themselves are verification item 8 of the project plan, and they are checked in
+`tests/test_gold_recon.py` under "The dashboard's arithmetic", where a loaded warehouse already
+exists. Two measures are recomputed there by a third path that shares no expression with this
+file's: `[Authorisation Rate]` through `transaction_status` rather than `SUM(is_approved)` — not the
+same predicate renamed, since `is_approved` is a judgement about which of three statuses count as
+approvals — and `[Average Approved Value (GBP)]` through `AVG` rather than a sum over a count, with
+a plausible-range assertion that the pre-fix model would have failed.
 
 **What this cannot check**, because it is a static grand-total-and-trend page with no filter
 context: anything whose behaviour *is* filter context. `[Distinct Accounts (per day)]` is rendered

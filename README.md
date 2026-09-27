@@ -10,7 +10,7 @@ Fabric notebook code; it runs on a laptop.
 > ### Status
 >
 > **What runs:** landing → bronze → silver → gold, end-to-end, from a cold start, on PySpark 3.5 /
-> Delta 3.2 — the same pairing as the Fabric Spark runtime. 221 tests pass locally, including
+> Delta 3.2 — the same pairing as the Fabric Spark runtime. 234 tests pass locally, including
 > run-it-twice idempotency, SCD2 interval invariants, a reconciliation that ties every bronze row to
 > a silver row, a quarantined row or a deduplicated one, and a second reconciliation in which every
 > difference between silver and the star schema is enumerated and attributed to a named cause.
@@ -143,7 +143,7 @@ make generate SCALE=tiny    # deterministic landing files under ./_onelake/files
 make seed                   # the metadata control plane: config, DQ rules, watermarks
 make run                    # bronze, silver, gold — driven entirely by meta_source_config
 make run                    # run it again — this is the interesting one
-make test                   # 221 tests
+make test                   # 234 tests
 ```
 
 The second `make run` is the point. It should do almost nothing, and say so:
@@ -330,7 +330,7 @@ rather than emitting a zero-width row that no point-in-time join could ever retu
 
 ## 7. What the tests actually prove
 
-`make test` — 221 tests. The ones that matter:
+`make test` — 234 tests. The ones that matter:
 
 | Claim | Test |
 |---|---|
@@ -365,6 +365,9 @@ rather than emitting a zero-width row that no point-in-time join could ever retu
 | Direct Lake cannot silently fall back to DirectQuery, and nothing is a calculated column | `test_the_model_forbids_falling_back_to_directquery`, `test_there_are_no_calculated_columns` |
 | Every lineage tag is derivable from its object's path, so a copied table file fails | `test_every_lineage_tag_is_derived_from_its_object_path` |
 | `measures.dax` has not drifted from the TMDL it is generated from | `make lint` (`tools/extract_dax.py --check`) |
+| A money measure divides by 100 exactly when it sums a minor-units column, and a `_minor` column is never formatted as money | `test_a_measure_sums_minor_units_exactly_when_it_divides_by_100`, `test_every_minor_column_is_formatted_as_an_integer` |
+| The average approved payment is a plausible figure in pounds, not a figure 100x too large | `test_dashboard_average_approved_value_is_in_pounds_not_pence` |
+| Two measures agree with a third SQL path that shares no expression with the dashboard's | `test_dashboard_authorisation_rate_agrees_with_an_independent_count` |
 
 Three notes on how these are written, because they are the difference between a suite that checks
 the work and one that agrees with it:
@@ -474,7 +477,7 @@ semantic-model/measures.dax   Generated from the TMDL by tools/extract_dax.py. A
 tools/tmdl.py                 The TMDL reader the model's tests are built on, plus the lineage-tag
                               derivation.
 
-tests/                        221 tests. conftest.py builds an isolated lake per module.
+tests/                        234 tests. conftest.py builds an isolated lake per module.
 ```
 
 If you are reviewing this and have ten minutes, read in this order: the header of
