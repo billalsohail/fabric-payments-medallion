@@ -34,11 +34,14 @@ Fabric notebook code; it runs on a laptop.
 > locally and is a trap in CI, where a skipped session is a green tick. A build that proved nothing
 > must not look like a build that passed.
 >
-> **What is written but not yet built:** the static dashboard and the `fabric/` deployment
-> artefacts. The semantic model is written — `semantic-model/` holds the Direct Lake model in TMDL,
-> the text format Fabric's own git integration uses — and it is the one part of the repo whose
-> correctness rests on tests alone: 23 of them tie every column, relationship and measure reference
-> back to the warehouse DDL, and **no DAX engine has ever loaded it**
+> **What is written but not yet built:** the `fabric/` deployment artefacts. The semantic model is
+> written — `semantic-model/` holds the Direct Lake model in TMDL, the text format Fabric's own git
+> integration uses — and **no DAX engine has ever loaded it**: its correctness rests on 23 tests
+> tying every column, relationship and measure reference back to the warehouse DDL, plus
+> `make dashboard`, which reimplements the measures in SQL and renders them through the model's own
+> format strings. That second check is the one that found a real defect — every money measure was
+> reporting a figure 100× too large, and 23 passing tests could not see it, because a format string
+> that formats the wrong magnitude is consistent with everything
 > ([`semantic-model/README.md`](semantic-model/README.md)). See
 > [Build state](#8-build-state) — this repo is mid-build and the roadmap is stated rather than
 > implied.
@@ -411,7 +414,7 @@ Honest, because the alternative is worse. Three days were budgeted; this is the 
 | CI (`.github/workflows/ci.yml`) | **Done and green.** A cold runner generates the feeds, runs all three stages, runs them again, then runs the suite — and asserts the suite was not skipped, because a skipped session is also a green tick |
 | Semantic model (TMDL) | **Done** — 10 tables, 14 relationships, 36 measures, 23 tests tying it to the warehouse DDL; **never loaded by Fabric or any DAX engine** ([`semantic-model/README.md`](semantic-model/README.md)) |
 | `semantic-model/measures.dax` | **Done and generated** from the TMDL by `tools/extract_dax.py`; `make lint` fails on drift |
-| Static dashboard (`dashboard/`) | Not written |
+| Static dashboard (`dashboard/`) | **Done** — `make dashboard` reads the warehouse and emits a self-contained two-page HTML file covering 34 of the 36 measures. Not a Power BI report and not a substitute for one; it exists so the measures produce *numbers*, and the first number it produced was wrong by 100× ([`dashboard/build_dashboard.py`](dashboard/build_dashboard.py)) |
 | `fabric/` deployment artefacts + runbook | Not written; will be labelled UNVALIDATED in every file |
 | [`docs/fabric-tsql-subset.md`](docs/fabric-tsql-subset.md) | **Done** — the rules, the Learn pages they came from, the four corrections those pages forced, and what the linter cannot tell you |
 | [`docs/design-decisions.md`](docs/design-decisions.md) | **Done** — fourteen decisions, the last four made *by* the code rather than before it, each with the cost it carries |
