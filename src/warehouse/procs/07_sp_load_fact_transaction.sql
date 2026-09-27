@@ -14,8 +14,11 @@
 -- copies of the projection that must not drift. Deleting the staged ids and re-inserting them is
 -- one projection, and it is the same delete-by-key idiom bronze uses for replay.
 --
--- It is also what makes the load idempotent in the sense tests/test_idempotency.py asserts:
--- running the same batch twice deletes what the first run wrote and writes it again identically.
+-- It is also what makes the load idempotent, and the proof is indirect but complete: CI runs the
+-- whole pipeline twice before the test suite, so by the time
+-- tests/test_gold_recon.py::test_fact_counts_tie_exactly_to_staging runs, this proc has loaded the
+-- same batch twice. A delete-then-insert that was not re-runnable from the top would show up there
+-- as a fact table holding twice its staging count, which is the one failure an append cannot hide.
 --
 -- 2. EVERY DIMENSION LOOKUP IS A LEFT JOIN WITH COALESCE(..., -1)
 --

@@ -25,10 +25,11 @@
 -- is how a warehouse ends up with duplicate dimension rows and a fact table that fans out.
 -- Concretely: `src/lib/dq.py`'s `unique` rule is what makes the PKs true, its `referential`
 -- rule is what makes the FKs true, its `not_null` rule is what makes the NOT NULLs true, and
--- `tests/test_dq_gate.py` proves a violation fails the run rather than being logged and
--- forgotten. The integrity guarantee lives one layer upstream of where it is declared, and
--- `tests/test_gold_recon.py` re-checks it *here* after the load — belt and braces, because a
--- silver-side guarantee says nothing about a bug in the gold load itself.
+-- `tests/test_silver.py::test_an_error_severity_rule_fails_the_run_and_records_why` proves a
+-- violation fails the run rather than being logged and forgotten. The integrity guarantee lives
+-- one layer upstream of where it is declared, and `tests/test_gold_recon.py` re-checks it *here*
+-- after the load — belt and braces, because a silver-side guarantee says nothing about a bug in
+-- the gold load itself.
 --
 -- The one thing `NOT ENFORCED` genuinely costs: a declared-but-violated key makes the
 -- optimiser's join elimination *wrong*, not merely unhelpful, and the symptom is missing rows

@@ -4,12 +4,13 @@
 -- ┌─────────────────────────────────────────────────────────────────────────────────────┐
 -- │ UNVALIDATED, and more so than anything else in src/warehouse/.                      │
 -- │                                                                                     │
--- │ No file under src/warehouse/ has been executed by any engine (docs/gold-execution   │
--- │ .md explains why). This one is additionally unverifiable *in principle* without a   │
--- │ tenant: RLS and masking are evaluated against Entra identities, and there is no      │
--- │ local substitute for a signed-in user. The logic files can at least be proven by     │
--- │ src/lib/gold.py running the same transformations in Spark SQL; a filter predicate    │
--- │ has no such fallback. Treat this file as a design, reviewable as code.               │
+-- │ Nothing under src/warehouse/ has been executed by any engine —                      │
+-- │ docs/gold-execution.md explains why. This one is additionally unverifiable *in      │
+-- │ principle* without a tenant: RLS and masking are evaluated against Entra            │
+-- │ identities, and there is no local substitute for a signed-in user. The logic files  │
+-- │ can at least be proven by src/lib/gold.py running the same transformations in Spark │
+-- │ SQL; a filter predicate has no such fallback. Treat this file as a design,          │
+-- │ reviewable as code.                                                                 │
 -- └─────────────────────────────────────────────────────────────────────────────────────┘
 --
 -- ## The cost of this file, stated up front
