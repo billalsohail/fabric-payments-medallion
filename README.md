@@ -55,6 +55,31 @@ Fabric notebook code; it runs on a laptop.
 
 ---
 
+## If you have four minutes
+
+This page is long because the claims in it are qualified, and qualifying a claim costs words. If you
+are reading it before a conversation rather than after one, these four things are the ones I would
+want you to have seen:
+
+1. **[The CI run](https://github.com/billalsohail/fabric-payments-medallion/actions/workflows/ci.yml)**
+   — not the badge. A cold runner generates the data, runs all three stages, runs them again to prove
+   the rerun is a no-op, runs 381 tests, and then asserts the suite was not *skipped*.
+2. **[`docs/gold-execution.md`](docs/gold-execution.md)** — the one place this repo could most easily
+   overclaim, and the page that separates the two claims it makes about the gold layer instead of
+   conflating them.
+3. **[`tools/fabric_tsql_lint.py`](tools/fabric_tsql_lint.py)** — 41 rules derived from Microsoft
+   Learn's documented Fabric Warehouse T-SQL surface area, each citing the page and the `ms.date` it
+   was read on, so a rule that has gone stale can be found rather than guessed at.
+4. **[`fabric/README.md`](fabric/README.md)** — the deployment layer, and the only part of this repo
+   whose correctness is *argued* rather than demonstrated. It opens by saying so, and §4 lists three
+   things it deliberately does not contain.
+
+Section [8](#8-build-state) is the honest inventory of what is built and what is not.
+Section [7](#7-what-the-tests-actually-prove) is what the tests prove and, line by line, what they
+do not.
+
+---
+
 ## 1. What this repo is
 
 Seven feeds, each chosen because it forces a different mechanism to exist:
