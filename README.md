@@ -10,7 +10,7 @@ Fabric notebook code; it runs on a laptop.
 > ### Status
 >
 > **What runs:** landing → bronze → silver → gold, end-to-end, from a cold start, on PySpark 3.5 /
-> Delta 3.2 — the same pairing as the Fabric Spark runtime. 381 tests pass locally, including
+> Delta 3.2 — the same pairing as the Fabric Spark runtime. 384 tests pass locally, including
 > run-it-twice idempotency, SCD2 interval invariants, a reconciliation that ties every bronze row to
 > a silver row, a quarantined row or a deduplicated one, and a second reconciliation in which every
 > difference between silver and the star schema is enumerated and attributed to a named cause.
@@ -63,7 +63,7 @@ want you to have seen:
 
 1. **[The CI run](https://github.com/billalsohail/fabric-payments-medallion/actions/workflows/ci.yml)**
    — not the badge. A cold runner generates the data, runs all three stages, runs them again to prove
-   the rerun is a no-op, runs 381 tests, and then asserts the suite was not *skipped*.
+   the rerun is a no-op, runs 384 tests, and then asserts the suite was not *skipped*.
 2. **[`docs/gold-execution.md`](docs/gold-execution.md)** — the one place this repo could most easily
    overclaim, and the page that separates the two claims it makes about the gold layer instead of
    conflating them.
@@ -188,7 +188,7 @@ make generate SCALE=tiny    # deterministic landing files under ./_onelake/files
 make seed                   # the metadata control plane: config, DQ rules, watermarks
 make run                    # bronze, silver, gold — driven entirely by meta_source_config
 make run                    # run it again — this is the interesting one
-make test                   # 381 tests
+make test                   # 384 tests
 make maintain               # OPTIMIZE + VACUUM the Delta layers, on its own schedule
 make fabric-build           # render fabric/items/ into the git-integration layout (UNVALIDATED)
 ```
@@ -378,7 +378,7 @@ rather than emitting a zero-width row that no point-in-time join could ever retu
 
 ## 7. What the tests actually prove
 
-`make test` — 381 tests. The ones that matter:
+`make test` — 384 tests. The ones that matter:
 
 | Claim | Test |
 |---|---|
@@ -461,7 +461,10 @@ is worse than having no check at all.
 
 ## 8. Build state
 
-Honest, because the alternative is worse. Three days were budgeted; this is the end of day two.
+Honest, because the alternative is worse. Three days were budgeted and three were spent; every row
+below reads **Done**, and the rows that matter say what "done" does *not* mean — the deployment
+layer is done and unvalidated, and the semantic model is done and has never been loaded by a DAX
+engine. A table of green ticks with no such row would be the least trustworthy page in the repo.
 
 | Area | State |
 |---|---|
@@ -476,7 +479,7 @@ Honest, because the alternative is worse. Three days were budgeted; this is the 
 | CI (`.github/workflows/ci.yml`) | **Done and green.** A cold runner generates the feeds, runs all three stages, runs them again, then runs the suite — and asserts the suite was not skipped, because a skipped session is also a green tick |
 | Semantic model (TMDL) | **Done** — 10 tables, 14 relationships, 36 measures, 23 tests tying it to the warehouse DDL; **never loaded by Fabric or any DAX engine** ([`semantic-model/README.md`](semantic-model/README.md)) |
 | `semantic-model/measures.dax` | **Done and generated** from the TMDL by `tools/extract_dax.py`; `make lint` fails on drift |
-| Static dashboard (`dashboard/`) | **Done** — `make dashboard` reads the warehouse and emits a self-contained two-page HTML file covering 34 of the 36 measures. Not a Power BI report and not a substitute for one; it exists so the measures produce *numbers*, and the first number it produced was wrong by 100× ([`dashboard/build_dashboard.py`](dashboard/build_dashboard.py)) |
+| Static dashboard (`dashboard/`) | **Done** — `make dashboard` reads the warehouse and emits a self-contained two-page HTML file on which **every measure in the model appears**. The coverage is computed while the page is built and printed in its footer, rather than quoted here, so a measure added without a tile shows up on the page itself instead of going stale in this table. Not a Power BI report and not a substitute for one; it exists so the measures produce *numbers*, and the first number it produced was wrong by 100× ([`dashboard/build_dashboard.py`](dashboard/build_dashboard.py)) |
 | [`docs/fabric-deployment.md`](docs/fabric-deployment.md) | **Done** — item inventory, workspace layout, the dev→prod pipeline with its deployment rules, and a first-two-hours runbook that opens with the two questions no off-tenant check can answer. Every platform claim cites the Learn page it came from; §9 lists what would falsify it, starting with an open question the docs did not settle |
 | `fabric/` deployment layer | **Done, and UNVALIDATED — nothing in it has been run against a tenant.** Twelve `.platform` descriptors plus the variable library are in git; the git-integration layout itself is *generated* into `fabric/build/` by `make fabric-build`, because a file that can be derived should not also be committed. Three absences are deliberate and enforced by tests: no `wh_gold.Warehouse` item, no hand-written `pipeline-content.json`, no `parameter.yml`. 20 tests, and one format in it that no Learn page prints ([`fabric/README.md`](fabric/README.md)) |
 | [`docs/fabric-tsql-subset.md`](docs/fabric-tsql-subset.md) | **Done** — the rules, the Learn pages they came from, the four corrections those pages forced, and what the linter cannot tell you |
@@ -552,7 +555,7 @@ fabric/build_items.py         Renders those into Fabric's git-integration layout
 fabric/deploy.py              The fabric-cicd wrapper. Never executed. --dry-run is the only mode
                               anything in this repo has ever proven.
 
-tests/                        381 tests. conftest.py builds an isolated lake per module.
+tests/                        384 tests. conftest.py builds an isolated lake per module.
 tests/test_import_graph.py    The one test whose subject is a document: it enforces the import
                               graph docs/architecture.md §1 describes.
 tests/test_citations.py       The other one: every path cited in prose has to exist. It is the last

@@ -192,8 +192,9 @@ where the item becomes necessary.
 
 `rpt_payments` — there is no `.pbir`, no page layout and no visual, because Power BI Desktop is
 Windows-only and this is an arm64 Mac. `dashboard/build_dashboard.py` reads gold and emits static
-HTML covering 34 of the 36 measures, and it is labelled a stand-in everywhere it is mentioned. Worth
-knowing before attempting one: **PBIR-format reports are not supported by deployment pipelines**
+HTML on which every measure in the model appears — counted at build time and printed in the page's
+own footer — and it is labelled a stand-in everywhere it is mentioned. Worth knowing before
+attempting one: **PBIR-format reports are not supported by deployment pipelines**
 ([understand-the-deployment-process](https://learn.microsoft.com/fabric/cicd/deployment-pipelines/understand-the-deployment-process)),
 so the report format a new build would default to is the one that does not deploy.
 

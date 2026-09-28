@@ -1,7 +1,7 @@
 # Design decisions
 
-Ten decisions, each with the alternative that was rejected and what rejecting it costs. They are
-numbered because the rest of the repo cites them by number — `#1` from `tools/fabric_tsql_lint.py`
+Fourteen decisions, each with the alternative that was rejected and what rejecting it costs. They
+are numbered because the rest of the repo cites them by number — `#1` from `tools/fabric_tsql_lint.py`
 and `docs/gold-execution.md`, `#3` from `src/warehouse/ddl/05_security.sql`, `#10` from
 `src/warehouse/ddl/03_facts.sql`, `docs/data-contracts.md` and `src/notebooks/nb_02_silver_transform.py`
 — so the numbers are a stable interface and do not get reordered.
