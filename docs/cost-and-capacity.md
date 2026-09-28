@@ -38,8 +38,12 @@ division. The one place they meet is §9 of this page.
 
 Numbers below are from the local lake after `make run` at `--scale tiny`, read out of the Delta
 transaction logs — the **live snapshot**, not the files on disk. That distinction is not pedantry;
-it is §6. The lake holds 40 Delta tables; this is the subset the rest of the page uses — all of
-bronze, two of silver for comparison, and gold as its fact plus two totals.
+it is §6. `tools/lake_footprint.py` enumerates every Delta table in the lake; the table below is
+the subset the rest of the page uses — all of bronze, two of silver for comparison, and gold as its
+fact plus two totals. **The full count is deliberately not quoted here**, because it is not a
+property of the design: it moves with what has run — whether DQ has quarantined anything, whether
+`gold/stg` and `gold/sec` have been materialised — and a figure that changes on `make maintain`
+belongs in the tool's output, not in prose. Run the tool for the current number.
 
 | Layer | Table | Rows | Live files | Size | Rows/file |
 |---|---|---|---|---|---|
