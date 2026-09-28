@@ -46,6 +46,7 @@ rename or a wrong extension fails the suite.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -231,4 +232,176 @@ def test_the_scan_actually_reaches_the_documents_it_claims_to() -> None:
     )
     assert "fabric/deploy.py" in into_repo, (
         "the citation that motivated this file is no longer being seen by it"
+    )
+
+
+# --- Counts stated in prose -------------------------------------------------------------------
+#
+# The checks above verify that a cited *path* exists. These verify that a cited *count* is right,
+# which is the same class of defect one level down: `docs/design-decisions.md` opened with "Ten
+# decisions" for as long as it had fourteen, and said so two paragraphs above a sentence reading
+# "Decisions 11-14 came out of building rather than out of planning." Nothing was wrong with either
+# sentence alone. The page disagreed with itself, and with `README.md`, which had the right number.
+#
+# Only counts that are (a) derivable from the repo and (b) written out in more than one place are
+# worth pinning. A count stated once can be read against the thing it counts; a count stated three
+# times is an invitation to drift, and the number of design decisions is now stated in this file too,
+# which is the point — it is stated here *as a derivation*, not as a literal.
+
+# Number words this repo's prose actually uses, as an allowlist rather than a denylist of every
+# other adjective. A denylist was tried first and immediately flagged "numbered decisions" — an
+# adjective, not a count — in two places including this file's own assertion message. Matching only
+# things that *are* numbers cannot make that mistake, and the cost is that a page spelling out
+# "twenty" starts passing silently rather than failing; the NUMERALS assertion below is what keeps
+# that from being invisible.
+NUMERALS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+    "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+    "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
+}
+
+
+def _decision_headings() -> int:
+    """`## N. <title>` in the decisions page — the thing every stated count has to agree with."""
+    text = (ROOT / "docs" / "design-decisions.md").read_text()
+    numbers = [int(m.group(1)) for m in re.finditer(r"^## (\d+)\.", text, re.M)]
+    assert numbers == list(range(1, len(numbers) + 1)), (
+        f"design decisions are numbered {numbers}, which is not 1..{len(numbers)}. The opening "
+        f"paragraph calls the numbers a stable interface that does not get reordered, and files "
+        f"outside docs/ cite them, so a gap or a repeat is a broken reference somewhere."
+    )
+    return len(numbers)
+
+
+def test_every_stated_count_of_design_decisions_matches_the_headings() -> None:
+    """The defect this pair of tests exists for, in the file it happened in."""
+    n = _decision_headings()
+    assert n in NUMERALS.values(), (
+        f"there are now {n} design decisions, which NUMERALS cannot spell. Extend it, or this test "
+        f"stops being able to read the sentence it is checking."
+    )
+    wrong: dict[str, list[str]] = {}
+    for path in SCAN_FILES:
+        for lineno, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+            for m in re.finditer(r"\b([A-Za-z]+|\d{1,3}) (decisions|trade-offs)\b", line):
+                said = m.group(1).lower()
+                value = NUMERALS.get(said, int(said) if said.isdigit() else None)
+                if value is None or value == n:
+                    continue
+                wrong.setdefault(f"{said} {m.group(2)}", []).append(
+                    f"{path.relative_to(ROOT)}:{lineno}"
+                )
+    assert not wrong, (
+        f"docs/design-decisions.md has {n} numbered decisions, but these say otherwise: {wrong}. "
+        f"Append a decision and this fails until every page that counts them agrees — which is the "
+        f"only reason the count is safe to write out in prose at all."
+    )
+
+
+def test_the_decision_numbers_cited_elsewhere_exist() -> None:
+    """`#12` in a docstring is a link. It should not point past the end of the page."""
+    n = _decision_headings()
+    dangling: dict[str, list[str]] = {}
+    for path in SCAN_FILES:
+        for lineno, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+            if "decision" not in line.lower() and "#" not in line:
+                continue
+            for m in re.finditer(r"(?<![\w#])#(\d{1,3})(?![\d\w])", line):
+                cited = int(m.group(1))
+                if cited < 1 or cited > n:
+                    dangling.setdefault(f"#{cited}", []).append(
+                        f"{path.relative_to(ROOT)}:{lineno}"
+                    )
+    assert not dangling, (
+        f"these cite a design decision that does not exist (the page has {n}): {dangling}. Either "
+        f"the decision was removed and its citation was not, or the number is a typo — and because "
+        f"the numbers are a stable interface, renumbering to fix it would break the others."
+    )
+
+
+# Ways of asking pytest for a subset, by the dest of the option that requests one. `keyword` (-k) and
+# `markexpr` (-m) come from pytest's core argument parsing and are always present; `lf`, `failedfirst`
+# and `deselect` come from plugins and are read defensively, because a dest is not a documented
+# interface. `_narrowing_option` asserts the stable two exist so that a rename cannot quietly turn
+# the skip guard into a no-op.
+_CORE_NARROWING = ("keyword", "markexpr")
+_PLUGIN_NARROWING = ("lf", "failedfirst", "deselect")
+
+
+def _narrowing_option(config: pytest.Config) -> str | None:
+    """The name of the option that narrowed collection, or None if the whole suite was asked for."""
+    missing = [n for n in _CORE_NARROWING if not hasattr(config.option, n)]
+    assert not missing, (
+        f"pytest no longer exposes {missing} on config.option, so this test can no longer tell a "
+        f"full run from a subset. It would skip nothing and compare the suite's stated size against "
+        f"whatever fraction happened to be selected."
+    )
+    for name in (*_CORE_NARROWING, *_PLUGIN_NARROWING):
+        if getattr(config.option, name, None):
+            return name
+    return None
+
+
+def test_every_stated_test_count_matches_the_suite(request: pytest.FixtureRequest) -> None:
+    """The suite's size is written out in six documents, so it is six places that go stale at once.
+
+    The count comes from pytest's own collection rather than from counting `def test_`, because
+    parametrisation over `SCAN_FILES` and over the `.sql` files means the suite's size is a property
+    of the repository's *contents*, not of the test code — there are far more tests than there are
+    test functions, and anything counting functions would be wrong by more than a hundred.
+
+    This docstring deliberately contains no digits followed by the word this test greps for. An
+    earlier draft opened by quoting the stale figure and flagged itself, which is the second time
+    writing these checks that the check caught its own prose — see the note on `NUMERALS` above.
+
+    **Not every stated count is the suite's.** The docs also state per-area figures — how many tests
+    hold the linter, the semantic model, the `fabric/` layer — and those are as worth pinning as the
+    total. So the allowlist is the total *plus every individual test file's own count*, all from the
+    same collection, and a figure is wrong when it matches none of them. The first draft compared
+    everything against the total alone, which would have failed on three true sentences.
+
+    What that cannot catch, stated because the weakness is real: if one file's stated count goes
+    stale and the number it went stale at happens to equal some other file's count, this passes. The
+    case it does catch is the one that actually happens — the suite grows, the total matches nothing
+    any more, and every page quoting it fails at once.
+
+    **Skipped when a subset is running**, which is not a loophole but the only correct behaviour:
+    `pytest -k citations` collects a fraction of the suite, and neither that fraction nor the
+    per-file counts derived from it are what any document is claiming.
+
+    The first version of the skip guard read `config.option.last_failed` and died with an
+    `AttributeError` on the full run — pytest's `--last-failed` has the dest `lf`, and `last_failed`
+    is not an attribute of anything. Two things came out of fixing it. Attribute names on
+    `config.option` are pytest's private surface, so they are read through `getattr` with a default
+    rather than assumed; and because a `getattr` default turns a renamed option into a guard that
+    silently never fires, `_narrowing_option` asserts the stable ones are actually present. A guard
+    that cannot fire is the failure mode this repo keeps writing tests against, and it very nearly
+    shipped inside one of them.
+    """
+    config = request.config
+    if narrowed := _narrowing_option(config):
+        pytest.skip(f"--{narrowed} selected a subset; the collected count is not the suite's count")
+    if [Path(a).resolve() for a in config.args] != [ROOT / "tests"]:
+        pytest.skip(f"collection was narrowed to {config.args}; not the whole suite")
+
+    per_file = Counter(item.nodeid.split("::")[0] for item in request.session.items)
+    collected = len(request.session.items)
+    legitimate = {collected} | set(per_file.values())
+    assert collected in legitimate and len(per_file) >= 10, (
+        f"collection returned {collected} tests across {len(per_file)} files, which is not a whole "
+        f"suite. This check is comparing prose against something other than what it claims to."
+    )
+
+    stated: dict[str, list[str]] = {}
+    for path in SCAN_FILES:
+        for lineno, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+            for m in re.finditer(r"\b(\d{2,4}) tests\b", line):
+                if int(m.group(1)) not in legitimate:
+                    stated.setdefault(m.group(1), []).append(f"{path.relative_to(ROOT)}:{lineno}")
+    assert not stated, (
+        f"these state a test count that is neither the suite's ({collected}) nor any single test "
+        f"file's: {stated}. Counts in the suite right now are "
+        f"{dict(sorted(per_file.items(), key=lambda kv: -kv[1]))}. Adding a test is supposed to "
+        f"change one of these numbers, so the fix is to update the prose — and the reason this check "
+        f"exists is that the total is written in six places and nobody edits six places."
     )
